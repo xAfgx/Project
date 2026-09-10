@@ -1,0 +1,3 @@
+# Optional local slider-image fallback for ARES.
+# The core SeleniumBase runtime does not require this package to start.
+ddddocr==1.6.1

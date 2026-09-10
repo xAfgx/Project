@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Checkout - Pokémon Center</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f0f8ff;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 1em;
+        }
+        .checkout-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid #eee;
+            border-radius: 5px;
+        }
+        .submit-order {
+            background: #e60012;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.1em;
+            display: block;
+            margin: 20px auto;
+        }
+        .submit-order:hover {
+            background: #c4000f;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Checkout</h1>
+        
+        <div class="checkout-section">
+            <h2>Lieferadresse</h2>
+            <div class="form-group">
+                <label for="name">Vollständiger Name</label>
+                <input type="text" id="name" value="Max Mustermann">
+            </div>
+            <div class="form-group">
+                <label for="email">E-Mail</label>
+                <input type="email" id="email" value="max@example.com">
+            </div>
+            <div class="form-group">
+                <label for="address">Adresse</label>
+                <input type="text" id="address" value="Musterstraße 1">
+            </div>
+            <div class="form-group">
+                <label for="city">Stadt</label>
+                <input type="text" id="city" value="Musterstadt">
+            </div>
+            <div class="form-group">
+                <label for="zip">PLZ</label>
+                <input type="text" id="zip" value="12345">
+            </div>
+            <div class="form-group">
+                <label for="country">Land</label>
+                <select id="country">
+                    <option>Deutschland</option>
+                    <option>Österreich</option>
+                    <option>Schweiz</option>
+                </select>
+            </div>
+        </div>
+        
+        <div class="checkout-section">
+            <h2>Zahlungsinformationen</h2>
+            <div class="form-group">
+                <label for="card-number">Kartennummer</label>
+                <input type="text" id="card-number" value="4111 1111 1111 1111">
+            </div>
+            <div class="form-group">
+                <label for="expiry">Ablaufdatum</label>
+                <input type="text" id="expiry" value="12/25">
+            </div>
+            <div class="form-group">
+                <label for="cvv">CVV</label>
+                <input type="text" id="cvv" value="123">
+            </div>
+        </div>
+        
+        <div class="cart-total">
+            Gesamt: €29,99
+        </div>
+        
+        <button class="submit-order" onclick="submitOrder()">
+            Zahlungspflichtig bestellen
+        </button>
+    </div>
+    
+    <script>
+        function submitOrder() {
+            alert('Bestellung wird verarbeitet...');
+            // Simuliere erfolgreiche Bestellung
+            setTimeout(() => {
+                alert('Bestellung erfolgreich abgeschlossen!');
+                window.location.href = 'confirmation.html';
+            }, 2000);
+        }
+    </script>
+</body>
+</html>

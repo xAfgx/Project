@@ -1,0 +1,16 @@
+{
+  "id": "test-local-pokemon-1",
+  "config": {
+    "shopId": "pokemon-center-de",
+    "data": {
+      "profileId": "default-profile",
+      "postQueueDiscovery": {
+        "productName": "pikachu",
+        "keywords": ["pikachu", "plüsch"]
+      },
+      "browserConfig": {
+        "headless": false
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "root": ".challenge-board",
+  "tiles": ".challenge-board .tile",
+  "instruction": ".challenge-instruction",
+  "submit": ".challenge-submit",
+  "sliderRoot": ".slider-challenge",
+  "sliderHandle": ".slider-handle",
+  "sliderTrack": ".slider-track",
+  "sliderInstruction": ".slider-instruction"
+}

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pokémon Produkte</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f0f8ff;
+        }
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .product {
+            background: white;
+            border-radius: 10px;
+            padding: 15px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .product img {
+            max-width: 100%;
+            height: 200px;
+            object-fit: cover;
+            border-radius: 5px;
+        }
+        .add-to-cart {
+            background: #e60012;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            margin-top: 10px;
+        }
+        .add-to-cart:hover {
+            background: #c4000f;
+        }
+        #captcha-challenge {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 1000;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Pokémon Center Produkte</h1>
+    
+    <div class="product-grid">
+        <div class="product" data-id="pikachu-plush">
+            <img src="https://via.placeholder.com/200x200/FFD700/000000?text=Pikachu" alt="Pikachu Plüsch">
+            <h3>Pikachu Plüsch</h3>
+            <p>€29,99</p>
+            <button class="add-to-cart">In den Einkaufswagen</button>
+        </div>
+        
+        <div class="product" data-id="charizard-card">
+            <img src="https://via.placeholder.com/200x200/FF4500/FFFFFF?text=Charizard" alt="Charizard Karte">
+            <h3>Charizard Karte</h3>
+            <p>€49,99</p>
+            <button class="add-to-cart">In den Einkaufswagen</button>
+        </div>
+        
+        <div class="product" data-id="pokeball-set">
+            <img src="https://via.placeholder.com/200x200/FF0000/FFFFFF?text=Pokeball" alt="Pokeball Set">
+            <h3>Pokeball Set</h3>
+            <p>€19,99</p>
+            <button class="add-to-cart">In den Einkaufswagen</button>
+        </div>
+    </div>
+    
+    <!-- Simuliertes Grid-Captcha -->
+    <div id="captcha-challenge">
+        <h3>Bitte wählen Sie alle Bilder mit Pikachu aus</h3>
+        <div id="captcha-grid" style="display:grid; grid-template-columns:repeat(3,1fr); gap:5px; width:300px; margin:20px auto;">
+            <!-- 3x3 Grid Tiles -->
+            <img src="https://via.placeholder.com/100x100/FFD700/000000?text=Pikachu" data-tile="0" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/7B68EE/FFFFFF?text=Ball" data-tile="1" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FFD700/000000?text=Pikachu" data-tile="2" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/32CD32/FFFFFF?text=Bulbasaur" data-tile="3" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FFD700/000000?text=Pikachu" data-tile="4" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FF4500/FFFFFF?text=Charmander" data-tile="5" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FFD700/000000?text=Pikachu" data-tile="6" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FF1493/FFFFFF?text=Jigglypuff" data-tile="7" style="cursor:pointer; border:2px solid transparent;">
+            <img src="https://via.placeholder.com/100x100/FFD700/000000?text=Pikachu" data-tile="8" style="cursor:pointer; border:2px solid transparent;">
+        </div>
+        <button id="captcha-submit" style="margin-top:15px; padding:10px 20px; background:#4CAF50; color:white; border:none; border-radius:5px; cursor:pointer;">
+            Bestätigen
+        </button>
+    </div>
+    
+    <script>
+        // Produkt zum Warenkorb hinzufügen
+        document.querySelectorAll('.add-to-cart').forEach(button => {
+            button.addEventListener('click', function() {
+                const productId = this.parentElement.dataset.id;
+                console.log('Produkt hinzugefügt:', productId);
+                
+                // Zeige Captcha-Challenge
+                setTimeout(() => {
+                    document.getElementById('captcha-challenge').style.display = 'block';
+                }, 1000);
+            });
+        });
+        
+        // Captcha Tile Selektion
+        document.querySelectorAll('#captcha-grid img').forEach(img => {
+            img.addEventListener('click', function() {
+                this.style.border = this.style.border === '2px solid #4CAF50' 
+                    ? '2px solid transparent' 
+                    : '2px solid #4CAF50';
+            });
+        });
+        
+        // Captcha Bestätigen
+        document.getElementById('captcha-submit').addEventListener('click', function() {
+            document.getElementById('captcha-challenge').style.display = 'none';
+            alert('Captcha erfolgreich bestätigt!');
+            
+            // Weiterleitung zum Warenkorb
+            setTimeout(() => {
+                window.location.href = 'cart.html';
+            }, 1500);
+        });
+    </script>
+</body>
+</html>

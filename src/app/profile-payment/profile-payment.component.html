@@ -1,0 +1,51 @@
+<section class="secure-payment-card">
+  <div class="secure-payment-head">
+    <div>
+      <div class="eyebrow">ZAHLUNGSDATEN</div>
+      <h3>Kartendaten</h3>
+      <small>Verschlüsselt außerhalb von profiles.json gespeichert. Im Checkout werden die Daten nur für die aktive Session entschlüsselt.</small>
+    </div>
+    <span class="security-chip" [class.ready]="encryptionAvailable">{{ encryptionAvailable ? 'OS-ENCRYPTED' : 'ENCRYPTION FEHLT' }}</span>
+  </div>
+
+  <div class="notice error" *ngIf="error">{{ error }}</div>
+  <div class="notice info" *ngIf="info">{{ info }}</div>
+
+  <div class="form-grid">
+    <label class="wide">
+      <span>Karteninhaber</span>
+      <input [(ngModel)]="holderName" autocomplete="cc-name" placeholder="Max Mustermann">
+    </label>
+    <label class="wide">
+      <span>Kartennummer</span>
+      <input [(ngModel)]="cardNumber" inputmode="numeric" autocomplete="cc-number" placeholder="1234 5678 9012 3456">
+      <small *ngIf="configured">Nach dem Speichern wird nur die maskierte Nummer angezeigt.</small>
+    </label>
+    <label>
+      <span>Ablaufmonat</span>
+      <input [(ngModel)]="expiryMonth" inputmode="numeric" autocomplete="cc-exp-month" placeholder="MM" maxlength="2">
+    </label>
+    <label>
+      <span>Ablaufjahr</span>
+      <input [(ngModel)]="expiryYear" inputmode="numeric" autocomplete="cc-exp-year" placeholder="YYYY" maxlength="4">
+    </label>
+    <label>
+      <span>CVC / CVV</span>
+      <input [(ngModel)]="securityCode" type="password" inputmode="numeric" autocomplete="cc-csc" placeholder="{{ configured ? 'gespeichert – leer lassen zum Beibehalten' : 'CVC' }}" maxlength="4">
+    </label>
+  </div>
+
+  <div class="payment-field-map">
+    <span>Checkout:</span>
+    <code>holderName</code>
+    <code>cardNumber</code>
+    <code>expiry</code>
+    <code>securityCode</code>
+  </div>
+
+  <div class="secure-payment-actions">
+    <button class="btn btn-primary" type="button" [disabled]="saving || !encryptionAvailable" (click)="save()">
+      {{ saving ? 'Speichere…' : 'Zahlungsdaten sicher speichern' }}
+    </button>
+  </div>
+</section>

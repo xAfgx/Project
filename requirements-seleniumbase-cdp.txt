@@ -1,0 +1,8 @@
+# ARES SeleniumBase Pure CDP dependency.
+# SeleniumBase itself stays unmodified and owns browser/profile/session lifecycle.
+# IMPORTANT: curl_cffi is ELIMINATED - all network requests use native Chrome CDP Fetch.
+# JA4 TLS consistency requires ALL requests flow through the same browser instance.
+seleniumbase==4.53.7
+# curl_cffi REMOVED - eliminated for JA4 TLS fingerprint consistency
+# Network requests now flow via CDP Fetch.execute over the same Chrome TLS connection
+Pillow>=10.4.0,<13

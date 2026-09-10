@@ -1,0 +1,5 @@
+-r requirements-seleniumbase-cdp.txt
+torch>=2.4,<3
+transformers>=4.50,<5
+Pillow>=10,<13
+safetensors>=0.4,<1

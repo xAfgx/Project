@@ -1,0 +1,55 @@
+{
+  "name": "ares-task-orchestrator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ARES Task Orchestrator with persistent task history",
+  "main": "dist/backend/electron/main.js",
+  "scripts": {
+    "build": "npm run build:backend && npm run build:ui",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "build:backend": "tsc -p tsconfig.backend.json",
+    "build:ui": "ng build",
+    "start:ui": "ng serve",
+    "native:electron": "electron-builder install-app-deps",
+    "native:node": "npm rebuild better-sqlite3",
+    "electron": "npm run native:electron && electron .",
+    "start": "ng serve",
+    "browser:install": "python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt",
+    "vision:status": "python python/seleniumbase_cdp/vision_runtime_bootstrap.py --status",
+    "vision:prepare": "python python/seleniumbase_cdp/vision_runtime_bootstrap.py --prepare",
+    "worker:run": "node dist/backend/browser-worker/worker.js",
+    "doctor:node": "node -e \"const m=+process.versions.node.split('.')[0]; console.log('System Node:', process.versions.node); if(m<20) process.exit(20)\""
+  },
+  "devDependencies": {
+    "@angular-devkit/build-angular": "^14.0.0",
+    "@angular/cli": "^14.0.0",
+    "@angular/compiler-cli": "^14.0.0",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.16",
+    "electron-builder": "^23.0.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typescript": "~4.7.2"
+  },
+  "dependencies": {
+    "@angular/animations": "^14.0.0",
+    "@angular/common": "^14.0.0",
+    "@angular/compiler": "^14.0.0",
+    "@angular/core": "^14.0.0",
+    "@angular/forms": "^14.0.0",
+    "@angular/platform-browser": "^14.0.0",
+    "@angular/platform-browser-dynamic": "^14.0.0",
+    "@zennolab_com/capmonstercloud-client": "^2.9.0",
+    "better-sqlite3": "9.6.0",
+    "bezier-mouse-js": "^2.0.1",
+    "electron": "^21.0.0",
+    "ghost-cursor": "^1.4.2",
+    "rxjs": "~7.5.0",
+    "tslib": "^2.3.0",
+    "zone.js": "~0.11.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

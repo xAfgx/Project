@@ -1,0 +1,164 @@
+.runtime-command-bar,
+.profile-browser-panel {
+  position: relative;
+  z-index: 1;
+  margin-top: 14px;
+  padding: 15px 16px;
+  border: 1px solid rgba(104, 139, 122, 0.14);
+  border-radius: 15px;
+  background: linear-gradient(90deg, rgba(19, 29, 24, 0.94), rgba(11, 18, 15, 0.9));
+}
+
+.runtime-command-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.runtime-command-copy small,
+.profile-browser-head small {
+  display: block;
+  color: #70867b;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+
+.runtime-command-copy strong,
+.profile-browser-head strong {
+  display: block;
+  margin-top: 4px;
+  color: #e0e9e4;
+  font-size: 14px;
+}
+
+.runtime-command-copy p,
+.profile-browser-head p {
+  margin: 5px 0 0;
+  color: #7f9188;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.runtime-command-metrics,
+.runtime-command-actions,
+.profile-browser-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.runtime-command-actions .runtime-btn,
+.profile-browser-actions .runtime-btn {
+  min-height: 36px;
+  padding-inline: 12px;
+}
+
+.profile-browser-actions .runtime-btn.session-reset {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid rgba(164, 92, 92, .24);
+  color: #c99c9c;
+  background: rgba(112, 48, 48, .12);
+  font-size: 8px;
+  opacity: .82;
+}
+
+.profile-browser-actions .runtime-btn.session-reset:hover:not(:disabled) {
+  opacity: 1;
+  background: rgba(126, 52, 52, .24);
+}
+
+.runtime-btn.start-all {
+  background: #37784f;
+}
+
+.runtime-btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.profile-browser-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.profile-browser-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.profile-browser-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 66px;
+  padding: 10px 11px;
+  border: 1px solid rgba(104, 136, 113, .1);
+  border-radius: 11px;
+  background: rgba(15, 22, 18, .8);
+}
+
+.profile-browser-row.open {
+  border-color: rgba(69, 200, 116, .28);
+  background: rgba(27, 62, 40, .32);
+}
+
+.profile-browser-copy strong,
+.profile-browser-copy small {
+  display: block;
+}
+
+.profile-browser-copy strong {
+  color: #dbe5de;
+  font-size: 12px;
+}
+
+.profile-browser-copy small {
+  margin-top: 3px;
+  color: #70867b;
+  font-size: 9px;
+}
+
+.profile-browser-empty {
+  margin-top: 10px;
+  color: #70867b;
+  font-size: 10px;
+}
+
+@media (max-width: 1100px) {
+  .runtime-command-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-command-metrics,
+  .runtime-command-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .profile-browser-head,
+  .profile-browser-row,
+  .runtime-command-actions,
+  .runtime-command-metrics {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profile-browser-actions {
+    width: 100%;
+  }
+
+  .profile-browser-actions .runtime-btn,
+  .runtime-command-actions .runtime-btn {
+    width: 100%;
+  }
+}

@@ -1,0 +1,179 @@
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: #050713;
+}
+
+body {
+  margin: 0;
+  color: #eef2ff;
+  background:
+    radial-gradient(circle at 18% 8%, rgba(87, 74, 196, .17), transparent 28rem),
+    radial-gradient(circle at 82% 22%, rgba(29, 123, 173, .11), transparent 32rem),
+    linear-gradient(180deg, #070914 0%, #050713 48%, #03050d 100%);
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+.app-shell::before,
+.app-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -2;
+}
+
+.app-shell::before {
+  opacity: .62;
+  background-image:
+    radial-gradient(circle, rgba(255,255,255,.78) 0 1px, transparent 1.2px),
+    radial-gradient(circle, rgba(156,177,255,.62) 0 1px, transparent 1.3px),
+    radial-gradient(circle, rgba(255,255,255,.42) 0 .8px, transparent 1px);
+  background-size: 97px 97px, 151px 151px, 61px 61px;
+  background-position: 5px 16px, 37px 71px, 21px 44px;
+  animation: ares-stars-drift 80s linear infinite;
+}
+
+.app-shell::after {
+  inset: -20vh -20vw;
+  z-index: -1;
+  opacity: .55;
+  background:
+    linear-gradient(115deg, transparent 43%, rgba(255,255,255,.0) 47%, rgba(196,211,255,.9) 49%, rgba(105,130,255,.45) 50%, transparent 53%) 0 0 / 520px 330px no-repeat,
+    linear-gradient(115deg, transparent 43%, rgba(255,255,255,.0) 47%, rgba(222,231,255,.75) 49%, rgba(95,168,216,.35) 50%, transparent 53%) 68vw 36vh / 430px 270px no-repeat;
+  animation: ares-shooting-stars 15s ease-in-out infinite;
+  filter: blur(.15px) drop-shadow(0 0 7px rgba(142,162,255,.5));
+}
+
+.sidebar,
+.topbar,
+.panel,
+.hero,
+.stat-card,
+.quick-actions > button,
+.profile-card,
+.proxy-card,
+.shop-card,
+.history-disclosure {
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.sidebar {
+  background: linear-gradient(180deg, rgba(8,11,27,.94), rgba(5,8,20,.88));
+  border-right-color: rgba(127,142,224,.14);
+  box-shadow: 20px 0 60px rgba(0,0,0,.2);
+}
+
+.topbar {
+  background: linear-gradient(180deg, rgba(7,10,24,.86), rgba(7,10,24,.55));
+  border-bottom: 1px solid rgba(130,145,225,.1);
+}
+
+.panel,
+.hero,
+.stat-card,
+.profile-card,
+.proxy-card,
+.shop-card,
+.history-disclosure {
+  border-color: rgba(132,148,229,.13);
+  background-image: linear-gradient(145deg, rgba(15,20,43,.88), rgba(8,12,28,.78));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025), 0 18px 50px rgba(0,0,0,.13);
+}
+
+.panel:hover,
+.profile-card:hover,
+.proxy-card:hover,
+.shop-card:hover {
+  border-color: rgba(133,151,255,.22);
+}
+
+input,
+select,
+textarea {
+  background-color: rgba(5,8,21,.74) !important;
+  border-color: rgba(135,150,221,.18) !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: rgba(118,137,255,.58) !important;
+  box-shadow: 0 0 0 3px rgba(103,122,255,.09) !important;
+}
+
+.side-nav button,
+.profile-tabs button {
+  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+
+.side-nav button:hover,
+.profile-tabs button:hover {
+  transform: translateX(2px);
+}
+
+.side-nav button.active {
+  box-shadow: inset 0 0 0 1px rgba(135,151,255,.16), 0 8px 22px rgba(50,64,155,.08);
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+.focused-builder,
+.profile-panel {
+  max-width: 1180px;
+}
+
+.form-grid {
+  align-items: start;
+}
+
+.builder-divider {
+  opacity: .62;
+}
+
+@keyframes ares-stars-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-97px, 61px, 0); }
+}
+
+@keyframes ares-shooting-stars {
+  0%, 17% { transform: translate3d(-42vw, -26vh, 0); opacity: 0; }
+  20% { opacity: .7; }
+  30% { transform: translate3d(48vw, 34vh, 0); opacity: 0; }
+  31%, 62% { transform: translate3d(-18vw, -34vh, 0); opacity: 0; }
+  65% { opacity: .48; }
+  76% { transform: translate3d(42vw, 44vh, 0); opacity: 0; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell::before,
+  .app-shell::after {
+    animation: none !important;
+  }
+
+  .side-nav button:hover,
+  .profile-tabs button:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell::after {
+    opacity: .34;
+  }
+}

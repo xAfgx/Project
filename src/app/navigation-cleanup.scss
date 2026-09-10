@@ -1,0 +1,61 @@
+.clean-heading {
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+
+.compact-hero {
+  min-height: 0;
+}
+
+.focused-builder {
+  max-width: 1180px;
+}
+
+.profile-payment-source {
+  margin-top: 14px;
+}
+
+.history-disclosure {
+  display: block;
+  margin-top: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 18px;
+  background: rgba(7, 15, 20, 0.48);
+  overflow: hidden;
+}
+
+.history-disclosure > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.history-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.history-disclosure > summary span:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-disclosure > summary small {
+  opacity: 0.62;
+}
+
+.history-disclosure[open] > summary {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.history-panel {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}

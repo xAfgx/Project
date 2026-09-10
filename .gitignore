@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.angular/
+coverage/
+*.log
+.DS_Store
+
+# Local secrets and runtime data
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.db
+logs/
+browser-profiles/
+node_modules/  .env  dist/  build/ 

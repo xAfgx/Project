@@ -1,0 +1,16 @@
+{
+  "id": "test-random-product-1",
+  "config": {
+    "shopId": "pokemon-center-de",
+    "data": {
+      "profileId": "default-profile",
+      "postQueueDiscovery": {
+        "productName": "random",
+        "keywords": ["pokemon", "plüsch", "spielzeug"]
+      },
+      "browserConfig": {
+        "headless": false
+      }
+    }
+  }
+}

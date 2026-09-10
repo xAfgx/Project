@@ -1,0 +1,47 @@
+.secure-payment-card {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  background: rgba(5, 13, 18, 0.34);
+}
+
+.secure-payment-head,
+.secure-payment-actions,
+.payment-field-map {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.secure-payment-head {
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.secure-payment-head h3 {
+  margin: 3px 0 4px;
+}
+
+.secure-payment-head small {
+  opacity: 0.72;
+}
+
+.payment-field-map {
+  flex-wrap: wrap;
+  margin-top: 14px;
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.payment-field-map code {
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.secure-payment-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+}

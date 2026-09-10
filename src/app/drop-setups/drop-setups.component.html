@@ -1,0 +1,216 @@
+<div class="drop-setups-shell">
+  <div class="drop-page-head">
+    <div>
+      <div class="eyebrow">DROP OPERATIONS</div>
+      <h2>Drop Setups</h2>
+      <p>Vorbereiten, speichern und mit mehreren Profilen starten. Zahlungsdaten kommen ausschließlich aus dem jeweiligen Profil-Vault und werden niemals im Drop Setup gespeichert.</p>
+    </div>
+    <button type="button" class="drop-btn primary" (click)="openNewSetup()">+ Neues Drop Setup</button>
+  </div>
+
+  <div class="drop-feedback" *ngIf="feedback" [class.success]="feedback.kind === 'success'" [class.error]="feedback.kind === 'error'">
+    {{ feedback.text }}
+  </div>
+
+  <section class="drop-overview" *ngIf="!wizardOpen">
+    <div class="drop-empty" *ngIf="!setups.length">
+      <span class="samurai-mark">侍</span>
+      <h3>Noch kein Drop Setup</h3>
+      <p>Lege Shop, Produkt, Profile und Proxy-Zuordnungen einmal fest. Danach kannst du den gesamten Drop mit einem Klick starten.</p>
+      <button type="button" class="drop-btn primary" (click)="openNewSetup()">Erstes Setup anlegen</button>
+    </div>
+
+    <article class="setup-card" *ngFor="let setup of setups; trackBy: trackSetup" [class.open]="expandedSetupId === setup.id">
+      <div class="setup-main">
+        <button type="button" class="setup-open" (click)="toggleSetup(setup.id)">
+          <span class="setup-icon">◈</span>
+          <span class="setup-copy">
+            <strong>{{ setup.name }}</strong>
+            <small>{{ setupShopName(setup) }} · {{ setup.strategy === 'early-gate' ? 'Early Gate' : 'Produktmonitor' }} · {{ setup.assignments.length }} Profil(e)</small>
+          </span>
+          <span class="readiness" [class.ready]="setupReadiness(setup) === 'Bereit'">{{ setupReadiness(setup) }}</span>
+          <span class="setup-run-summary">{{ setupRunSummary(setup) }}</span>
+          <span class="chevron">{{ expandedSetupId === setup.id ? '⌃' : '⌄' }}</span>
+        </button>
+        <div class="setup-actions">
+          <button type="button" class="drop-btn ghost" (click)="editSetup(setup)">Bearbeiten</button>
+          <button type="button" class="drop-btn primary" [disabled]="!!startingSetupId" (click)="startSetup(setup)">
+            {{ startingSetupId === setup.id ? 'Startet…' : 'Alle starten' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="setup-expanded" *ngIf="expandedSetupId === setup.id">
+        <div class="setup-facts">
+          <div><span>Produkt</span><strong>{{ setup.strategy === 'early-gate' ? setup.productName : setup.searchTerm }}</strong></div>
+          <div><span>Intervall</span><strong>{{ setup.monitorIntervalSeconds }}s</strong></div>
+          <div><span>Staffelung</span><strong>{{ setup.staggerMs ? (setup.staggerMs / 1000) + 's' : 'gleichzeitig' }}</strong></div>
+          <div><span>Finaler Kauf</span><strong>globaler Backend-Guard</strong></div>
+        </div>
+
+        <div class="setup-keywords" *ngIf="setup.strategy === 'early-gate'">
+          <span *ngFor="let keyword of setup.discoveryKeywords">{{ keyword }}</span>
+          <small *ngIf="!setup.discoveryKeywords.length">Keine zusätzlichen Keywords · Produktname bleibt Discovery-Basis.</small>
+        </div>
+
+        <div class="assignment-list">
+          <div class="assignment-line" *ngFor="let assignment of setup.assignments">
+            <span class="assignment-profile">{{ profileName(assignment.profileId) }}</span>
+            <span>{{ proxyLabel(assignment.proxySelection, assignment.profileId) }}</span>
+            <span>{{ assignment.headless ? 'Headless' : 'Browser sichtbar' }}</span>
+          </div>
+        </div>
+
+        <div class="run-section">
+          <div class="run-heading">
+            <div><strong>Runs</strong><small>Profile | Proxy | Status | Öffnen</small></div>
+            <span>{{ setupRuns(setup.id).length }}</span>
+          </div>
+          <div class="run-empty" *ngIf="!setupRuns(setup.id).length">Noch keine Runs aus diesem Setup.</div>
+
+          <article class="run-card" *ngFor="let run of setupRuns(setup.id); trackBy: trackRun" [class.expanded]="expandedRunId === run.id">
+            <button type="button" class="run-row" (click)="toggleRun(run)">
+              <strong>{{ runProfileName(run) }}</strong>
+              <span>{{ runProxyLabel(run) }}</span>
+              <span class="run-state" [attr.data-state]="runPhase(run)">{{ runPhase(run) }}</span>
+              <span class="browser-state">{{ runBrowserStatus(run) }}</span>
+              <span class="open-label">{{ expandedRunId === run.id ? 'Schließen' : 'Öffnen' }}</span>
+            </button>
+
+            <div class="run-details" *ngIf="expandedRunId === run.id">
+              <div class="run-detail-grid">
+                <div><span>Parent Task-ID</span><code>{{ run.id }}</code></div>
+                <div><span>Browser Child</span><code>{{ childFor(run)?.id || 'noch keiner' }}</code></div>
+                <div><span>Aktiver Bereich</span><strong>{{ childFor(run) ? 'Browser / Checkout' : 'Monitoring' }}</strong></div>
+                <div><span>Queue</span><strong>{{ queueFor(run)?.active ? 'aktiv' : 'nicht aktiv' }}</strong></div>
+              </div>
+
+              <div class="queue-strip" *ngIf="queueFor(run)?.active">
+                <div><span>POS</span><strong>{{ queueFor(run)?.position ?? '–' }}</strong></div>
+                <div><span>TTW</span><strong>{{ queueFor(run)?.timeToWaitSeconds != null ? queueFor(run)?.timeToWaitSeconds + 's' : '–' }}</strong></div>
+                <div><span>Status</span><strong>{{ queueFor(run)?.statusText || 'Warteschlange aktiv' }}</strong></div>
+              </div>
+
+              <div class="live-keywords" *ngIf="canEditLiveKeywords(run)">
+                <div><strong>Live Discovery-Keywords</strong><small>Nur während POST_QUEUE_DISCOVERY änderbar. Der Backend-ACK bleibt maßgeblich.</small></div>
+                <div class="inline-input"><input [(ngModel)]="keywordDrafts[run.id]" placeholder="keyword 1, keyword 2"><button type="button" class="drop-btn bronze" (click)="updateLiveKeywords(run)">Live übernehmen</button></div>
+              </div>
+
+              <div class="timeline">
+                <div class="timeline-head"><strong>Timeline / Logs</strong><small>Letzte 30 Ereignisse von Parent + Browser Child</small></div>
+                <div class="timeline-empty" *ngIf="!logsFor(run).length">Noch keine Logs geladen.</div>
+                <div class="timeline-row" *ngFor="let log of logsFor(run)">
+                  <time>{{ formatLogTime(log.createdAt) }}</time>
+                  <span class="timeline-dot"></span>
+                  <div><strong>{{ log.state || log.event }}</strong><small>{{ log.message }}</small></div>
+                </div>
+              </div>
+
+              <div class="run-actions">
+                <button type="button" class="drop-btn ghost" (click)="pauseRun(run)">Pause</button>
+                <button type="button" class="drop-btn danger" (click)="stopRun(run)">Stop</button>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="setup-bottom-actions">
+          <button type="button" class="drop-btn danger-text" (click)="deleteSetup(setup)">Setup löschen</button>
+        </div>
+      </div>
+    </article>
+  </section>
+
+  <section class="drop-wizard" *ngIf="wizardOpen">
+    <div class="wizard-top">
+      <div>
+        <div class="eyebrow">{{ editingSetupId ? 'SETUP BEARBEITEN' : 'NEUES DROP SETUP' }}</div>
+        <h3>{{ draft.name || 'Unbenanntes Setup' }}</h3>
+      </div>
+      <button type="button" class="drop-btn ghost" (click)="closeWizard()">Zur Übersicht</button>
+    </div>
+
+    <div class="stepper">
+      <button type="button" *ngFor="let step of steps" [class.active]="wizardStep === step.number" [class.done]="wizardStep > step.number" (click)="wizardStep = step.number">
+        <span>{{ step.number }}</span><strong>{{ step.label }}</strong>
+      </button>
+    </div>
+
+    <div class="wizard-card" *ngIf="wizardStep === 1">
+      <div class="wizard-title"><span>01</span><div><h3>Shop & Strategie</h3><p>Definiere zuerst, wo und wie der Drop überwacht wird.</p></div></div>
+      <div class="drop-form-grid">
+        <label><span>Setup-Name</span><input [(ngModel)]="draft.name" placeholder="z. B. Pokémon Center Random Drop"></label>
+        <label><span>Shop</span><select [(ngModel)]="draft.shopId"><option value="">Shop auswählen</option><option *ngFor="let shop of shops" [value]="shop.id">{{ shop.name }}</option></select></label>
+      </div>
+      <div class="strategy-cards">
+        <button type="button" [class.active]="draft.strategy === 'early-gate'" (click)="setStrategy('early-gate')"><span>◈</span><strong>Early Gate</strong><small>Gate/Queue passiv erkennen → Browser Child → Release Discovery.</small></button>
+        <button type="button" [class.active]="draft.strategy === 'product-monitor'" (click)="setStrategy('product-monitor')"><span>◎</span><strong>Produktmonitor</strong><small>Produkt beobachten → bei Treffer Checkout-Run vorbereiten.</small></button>
+      </div>
+    </div>
+
+    <div class="wizard-card" *ngIf="wizardStep === 2">
+      <div class="wizard-title"><span>02</span><div><h3>Produkt & Keywords</h3><p>Nur die Informationen, die der Monitor wirklich braucht.</p></div></div>
+      <div class="drop-form-grid">
+        <label class="wide" *ngIf="draft.strategy === 'early-gate'"><span>Produktname</span><input [(ngModel)]="draft.productName" placeholder="z. B. Pokémon Center Elite Trainer Box"></label>
+        <label class="wide" *ngIf="draft.strategy === 'product-monitor'"><span>Produkt / Keyword / URL</span><input [(ngModel)]="draft.searchTerm" placeholder="z. B. Pokémon 151 Booster Bundle"></label>
+        <label><span>Prüfintervall</span><div class="suffix-input"><input [(ngModel)]="draft.monitorIntervalSeconds" type="number" min="1"><b>Sek.</b></div></label>
+      </div>
+      <div class="keyword-box" *ngIf="draft.strategy === 'early-gate'">
+        <div class="keyword-title"><div><strong>Discovery-Keywords</strong><small>Mehrere Begriffe möglich; später während POST_QUEUE_DISCOVERY live änderbar.</small></div><span>{{ draft.discoveryKeywords.length }}</span></div>
+        <div class="keyword-chips" *ngIf="draft.discoveryKeywords.length"><span *ngFor="let keyword of draft.discoveryKeywords">{{ keyword }}<button type="button" (click)="removeKeyword(keyword)">×</button></span></div>
+        <div class="inline-input"><input id="drop-keyword-input" (keyup.enter)="addKeyword()" placeholder="Keyword hinzufügen"><button type="button" class="drop-btn bronze" (click)="addKeyword()">Hinzufügen</button></div>
+      </div>
+    </div>
+
+    <div class="wizard-card" *ngIf="wizardStep === 3">
+      <div class="wizard-title"><span>03</span><div><h3>Profile & Proxys</h3><p>Jedes ausgewählte Profil wird ein eigener isolierter Run und darf maximal einen Browser Child erzeugen.</p></div></div>
+      <div class="profile-empty" *ngIf="!profiles.length">Noch keine Profile gespeichert. Lege zuerst im Bereich „Profiles“ mindestens ein Profil an.</div>
+      <div class="profile-assignment" *ngFor="let profile of profiles; trackBy: trackProfile" [class.selected]="hasAssignment(profile.id)">
+        <label class="profile-select"><input type="checkbox" [checked]="hasAssignment(profile.id)" (change)="toggleAssignment(profile.id, $any($event.target).checked)"><span class="avatar">{{ profile.name.slice(0, 1).toUpperCase() }}</span><span><strong>{{ profile.name }}</strong><small>{{ profile.contact.firstName }} {{ profile.contact.lastName }}</small></span></label>
+        <div class="assignment-controls" *ngIf="hasAssignment(profile.id)">
+          <label><span>Proxy</span><select [ngModel]="assignmentFor(profile.id)?.proxySelection?.mode" (ngModelChange)="setAssignmentProxyMode(profile.id, $event)"><option value="profile-default">Profilstandard · {{ profileProxyName(profile.id) }}</option><option value="direct">Direkt</option><option value="proxy">Bestimmter Proxy</option></select></label>
+          <label *ngIf="assignmentFor(profile.id)?.proxySelection?.mode === 'proxy'"><span>Proxy wählen</span><select [ngModel]="assignmentFor(profile.id)?.proxySelection?.proxyId || ''" (ngModelChange)="setAssignmentProxy(profile.id, $event)"><option value="">Proxy auswählen</option><option *ngFor="let proxy of proxies" [value]="proxy.id">{{ proxy.name }} · {{ proxy.health?.status || 'nicht getestet' }}</option></select></label>
+          <label class="headless-toggle"><input type="checkbox" [checked]="assignmentFor(profile.id)?.headless" (change)="setAssignmentHeadless(profile.id, $any($event.target).checked)"><span>Headless</span></label>
+        </div>
+      </div>
+      <div class="assignment-count"><strong>{{ draft.assignments.length }}</strong><span>Profil(e) ausgewählt</span></div>
+    </div>
+
+    <div class="wizard-card" *ngIf="wizardStep === 4">
+      <div class="wizard-title"><span>04</span><div><h3>Speichern & Starten</h3><p>Das Setup bleibt nach einem ARES-Neustart erhalten. Finale Kauf-Freigabe bleibt davon getrennt und wird nicht gespeichert.</p></div></div>
+      <div class="review-grid">
+        <div><span>Setup</span><strong>{{ draft.name }}</strong><small>{{ setupShopName(draft) }}</small></div>
+        <div><span>Strategie</span><strong>{{ draft.strategy === 'early-gate' ? 'Early Gate' : 'Produktmonitor' }}</strong><small>{{ draft.strategy === 'early-gate' ? draft.productName : draft.searchTerm }}</small></div>
+        <div><span>Runs</span><strong>{{ draft.assignments.length }}</strong><small>1 Parent pro Profil · max. 1 Child pro Parent</small></div>
+        <div><span>Start</span><strong>{{ draft.staggerMs ? 'gestaffelt' : 'gleichzeitig' }}</strong><small>{{ draft.staggerMs ? (draft.staggerMs / 1000) + 's Abstand' : 'kein Abstand' }}</small></div>
+      </div>
+      <div class="drop-form-grid compact">
+        <label><span>Staffelung</span><div class="suffix-input"><input [(ngModel)]="draft.staggerMs" type="number" min="0" max="60000" step="500"><b>ms</b></div><small>0 = gleichzeitig, z. B. 2000 = alle 2 Sekunden.</small></label>
+      </div>
+
+      <div class="session-payment-box">
+        <div class="session-payment-fields">
+          <div><strong>Profil-Zahlung ist immer aktiv</strong><small>Jeder Run verwendet automatisch die Zahlungspräferenz seines Profils; Kartendaten kommen bei Karte ausschließlich aus dem verschlüsselten Profile Vault.</small></div>
+          <div class="assignment-list">
+            <div class="assignment-line" *ngFor="let assignment of draft.assignments">
+              <span class="assignment-profile">{{ profileName(assignment.profileId) }}</span>
+              <span>{{ profilePaymentLabel(assignment.profileId) }}</span>
+              <span>PROFILE VAULT</span>
+            </div>
+          </div>
+          <small>Keine manuellen Kartenfelder und kein Payment-Schalter im Drop Setup. Kartennummer und CVC können hier weder überschrieben noch deaktiviert werden.</small>
+        </div>
+      </div>
+
+      <div class="guard-note"><span>盾</span><div><strong>Finaler Kauf bleibt separat</strong><small>Das Speichern oder Starten eines Drop Setups aktiviert niemals den globalen Kauf-Schalter.</small></div></div>
+    </div>
+
+    <div class="wizard-actions">
+      <button type="button" class="drop-btn ghost" [disabled]="wizardStep === 1" (click)="previousStep()">Zurück</button>
+      <div></div>
+      <button type="button" class="drop-btn bronze" *ngIf="wizardStep === 4" (click)="saveDraft()">Nur speichern</button>
+      <button type="button" class="drop-btn primary" *ngIf="wizardStep < 4" (click)="nextStep()">Weiter</button>
+      <button type="button" class="drop-btn primary" *ngIf="wizardStep === 4" [disabled]="!!startingSetupId" (click)="saveAndStart()">{{ startingSetupId ? 'Startet…' : 'Speichern & alle starten' }}</button>
+    </div>
+  </section>
+</div>

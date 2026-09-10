@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Warenkorb - Pokémon Center</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #f0f8ff;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        .cart-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 15px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .cart-total {
+            text-align: right;
+            font-size: 1.2em;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .checkout-button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.1em;
+            display: block;
+            margin: 20px auto;
+        }
+        .checkout-button:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Ihr Warenkorb</h1>
+        
+        <div class="cart-item">
+            <div>
+                <h3>Pikachu Plüsch</h3>
+                <p>Artikelnummer: PK-001</p>
+            </div>
+            <div>
+                <p>€29,99</p>
+                <p>Anzahl: 1</p>
+            </div>
+        </div>
+        
+        <div class="cart-total">
+            Gesamt: €29,99
+        </div>
+        
+        <button class="checkout-button" onclick="proceedToCheckout()">
+            Zur Kasse gehen
+        </button>
+    </div>
+    
+    <script>
+        function proceedToCheckout() {
+            alert('Weiterleitung zum Checkout...');
+            setTimeout(() => {
+                window.location.href = 'checkout.html';
+            }, 1500);
+        }
+    </script>
+</body>
+</html>
