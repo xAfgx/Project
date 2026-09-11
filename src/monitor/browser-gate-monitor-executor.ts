@@ -132,8 +132,11 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
       const page = handle.page;
       const pollUrl = sessionPollUrl(task, shop);
 
-      monitorLog(task.id, `mode=${networkMode === "browser-only" ? "STRICT" : "NORMAL"} stage=${networkMode === "browser-only" ? "network" : "session-http"} profile=${profile.id}`);
-      if (networkMode === "session-http-preferred") {
+      monitorLog(task.id, `mode=${networkMode === "browser-only" ? "STRICT" : "NORMAL"} engine=${policy.engine} stage=${networkMode === "browser-only" ? "network" : "session-http"} profile=${profile.id}`);
+      if (policy.sessionHttpRequested && !policy.sessionHttpAllowed) {
+        monitorLog(task.id, "stage=session-http blocked=true reason=engine-locked-non-monitor engine=cdp harvest=cdp");
+      }
+      if (policy.sessionHttpAllowed) {
         sessionPoller = new SessionHttpPoller({
           url: pollUrl,
           profileDir: handle.userDataDir,
@@ -148,7 +151,7 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
           monitorLog(task.id, `session-http=start-failed fallback=${policy.allowPassiveNetwork ? "network" : policy.allowPassiveDom ? "dom" : "none"} error=${error instanceof Error ? error.message : String(error)}`);
         }
       } else {
-        monitorLog(task.id, "stage=session-http skipped=true reason=browser-only");
+        monitorLog(task.id, "stage=session-http skipped=true reason=browser-only engine=cdp harvest=cdp");
         monitorLog(task.id, `stage=${policy.allowPassiveNetwork ? "network" : policy.allowPassiveDom ? "dom" : "passive-idle"} source=${policy.allowPassiveNetwork ? "passive-cdp" : policy.allowPassiveDom ? "native-cdp-dom" : "none"}`);
       }
 
@@ -164,9 +167,10 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
           pollIntervalMs: this.pollIntervalMs, refreshIntervalMs: this.refreshIntervalMs,
           sessionHttp: {
             enabled: Boolean(sessionPoller),
-            skipped: networkMode === "browser-only",
-            url: networkMode === "session-http-preferred" ? pollUrl : undefined,
-            engine: networkMode === "session-http-preferred" ? "curl_cffi" : undefined
+            skipped: !policy.sessionHttpAllowed,
+            url: policy.sessionHttpAllowed ? pollUrl : undefined,
+            engine: policy.sessionHttpAllowed ? "curl_cffi" : "cdp",
+            harvest: policy.sessionHttpAllowed ? "jar" : "cdp"
           },
           startedAt: new Date().toISOString()
         },

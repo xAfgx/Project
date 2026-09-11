@@ -53,7 +53,12 @@ export class SessionHttpPoller {
       url: this.options.url,
       profileDir: this.options.profileDir,
       proxy: this.options.proxy,
-      pollIntervalMs: this.options.pollIntervalMs ?? 2_000
+      pollIntervalMs: this.options.pollIntervalMs ?? 2_000,
+      // Strict engine switch: this sidecar is only spawned for UI-started
+      // MONITOR instances. The token is verified by the Python sidecar, which
+      // refuses to run curl_cffi for any other instance mode.
+      engine: "curl_cffi",
+      instanceMode: "monitor"
     })}\n`);
   }
 

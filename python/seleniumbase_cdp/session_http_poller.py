@@ -12,6 +12,8 @@ from typing import Any
 PREFIX = "ARES_SESSION_HTTP\t"
 JAR_FILENAME = ".ares-session-jar.json"
 JAR_TTL_SECONDS = 20
+ALLOWED_ENGINE = "curl_cffi"
+ALLOWED_INSTANCE_MODE = "monitor"
 QUEUE_RE = re.compile(r"(?i)(queue[-_.]?it|waiting[-_.]?room|warteschlange|queue-position|queue/status|\"ttw\"|\"position\")")
 RELEASE_RE = re.compile(r"(?i)(released|complete|completed|redirect|passed|admitted)")
 SOLD_OUT_RE = re.compile(r"(?i)(sold[\s_-]?out|out[\s_-]?of[\s_-]?stock|ausverkauft|nicht[\s-]?(?:auf[\s-]?)?vorrätig|nicht[\s-]?verfügbar|nicht[\s-]?verfuegbar|currently[\s-]?unavailable)")
@@ -20,6 +22,30 @@ AVAILABLE_RE = re.compile(r"(?i)(add[\s_-]?to[\s_-]?cart|add[\s_-]?to[\s_-]?bag|
 
 def emit(value: dict[str, Any]) -> None:
     print(PREFIX + json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+class EngineBlocked(PermissionError):
+    """Raised when curl_cffi is requested outside an explicit UI monitor run."""
+
+
+def engine_allowed(command: dict[str, Any]) -> bool:
+    """Strict engine switch: curl_cffi only for UI-started MONITOR instances.
+
+    Every other instance (manual browser, live tests, early gate, checkout
+    tasks) must use harvest=cdp through the native browser infrastructure.
+    """
+    return (
+        str(command.get("engine") or "").strip().lower() == ALLOWED_ENGINE
+        and str(command.get("instanceMode") or "").strip().lower() == ALLOWED_INSTANCE_MODE
+    )
+
+
+def assert_engine_allowed(command: dict[str, Any]) -> None:
+    if not engine_allowed(command):
+        raise EngineBlocked(
+            "engine-blocked: curl_cffi is only permitted for UI-started MONITOR "
+            "instances; all other modes run harvest=cdp via the native browser"
+        )
 
 
 def _num(value: Any) -> float | None:
@@ -220,6 +246,7 @@ def impersonate_for(user_agent: str) -> str:
 
 
 def poll(command: dict[str, Any]) -> dict[str, Any]:
+    assert_engine_allowed(command)
     from curl_cffi import requests
 
     url = str(command.get("url") or "").strip()
@@ -279,6 +306,19 @@ def main() -> int:
     if not line:
         return 2
     command = json.loads(line)
+    if not engine_allowed(command):
+        emit({
+            "type": "probe",
+            "ok": False,
+            "active": False,
+            "source": "session-http",
+            "engine": str(command.get("engine") or ""),
+            "instanceMode": str(command.get("instanceMode") or ""),
+            "harvestSource": "cdp",
+            "error": "engine-blocked: curl_cffi is only permitted for UI-started MONITOR instances",
+            "observedAtMs": int(time.time() * 1000),
+        })
+        return 3
     interval = max(1000, min(10000, int(command.get("pollIntervalMs") or 2000))) / 1000
     while True:
         started = time.monotonic()
