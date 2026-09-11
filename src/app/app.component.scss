@@ -187,10 +187,13 @@ input::placeholder { color: #444a53; }
 .composer-actions small { color: #565c65; font-size: 9px; }
 
 .task-table { overflow: hidden; }
+.task-list-reversed { display: flex; flex-direction: column-reverse; }
 .table-head, .task-item { display: grid; grid-template-columns: minmax(230px, 1.35fr) minmax(150px, .8fr) 120px 70px 154px; gap: 12px; align-items: center; }
 .table-head { min-height: 38px; padding: 0 14px; color: #575d66; background: #0b0d10; border-bottom: 1px solid #1a1d22; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
 .task-item { min-height: 68px; padding: 10px 14px; border-bottom: 1px solid #191c20; }
 .task-item:last-child { border-bottom: 0; }
+.task-list-reversed .task-item:last-child { border-bottom: 1px solid #191c20; }
+.task-list-reversed .task-item:first-child { border-bottom: 0; }
 .task-item:hover { background: #101216; }
 .task-main { display: grid; grid-template-columns: 8px 1fr; gap: 10px; align-items: center; min-width: 0; }
 .task-main strong, .route strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
