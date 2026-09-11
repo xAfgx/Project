@@ -120,6 +120,7 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
     try {
       const handle = await this.browserWorker.createContext({
         taskId: task.id,
+        targetId: shop.platform,
         userDataDir,
         headless: profile.browser?.headless ?? Boolean((task.config.data?.["browserConfig"] as Record<string, unknown> | undefined)?.["headless"]),
         proxy,

@@ -125,6 +125,7 @@ export class ShopifyTaskExecutor implements ITaskExecutor {
       await this.browserWorker.closeContext(task.id);
       const handle = await this.browserWorker.createContext({
         taskId: task.id,
+        targetId: shop.platform,
         userDataDir,
         headless,
         proxy,

@@ -90,6 +90,8 @@ export interface BrowserProxyConfig {
 
 export interface BrowserContextConfig {
    taskId: string;
+   targetId?: string;
+   accountId?: string;
    userDataDir: string;
    headless?: boolean;
    proxy?: BrowserProxyConfig;

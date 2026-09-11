@@ -205,6 +205,8 @@ export class SeleniumBaseBrowserWorker implements BrowserWorker {
 
       await transport.start({
         taskId: config.taskId,
+        targetId: config.targetId,
+        accountId: config.accountId,
         profileDir: normalizedDir,
         headless: config.headless ?? false,
         proxy: proxyValue(config.proxy),
