@@ -711,6 +711,7 @@ class SeleniumBaseCdpAdapter:
                 self._sb.quit()
                 self._wait_for_profile_flush(browser_pids)
         finally:
+            self._terminate_remaining_browser_pids(browser_pids)
             self._runtime_identity.clear()
 
     @staticmethod
@@ -738,6 +739,34 @@ class SeleniumBaseCdpAdapter:
             except (psutil.TimeoutExpired, psutil.AccessDenied, psutil.Error):
                 continue
         time.sleep(0.25)
+
+    @staticmethod
+    def _terminate_remaining_browser_pids(browser_pids: Iterable[int]) -> None:
+        """Terminate only session-owned browser PIDs after shutdown has completed."""
+        processes: List[psutil.Process] = []
+        for pid in dict.fromkeys(int(pid) for pid in browser_pids if isinstance(pid, int) and pid > 0):
+            try:
+                process = psutil.Process(pid)
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    processes.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                continue
+
+        for process in processes:
+            try:
+                process.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                pass
+
+        _, alive = psutil.wait_procs(processes, timeout=2.0) if processes else ([], [])
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                pass
+
+        if alive:
+            psutil.wait_procs(alive, timeout=2.0)
 
     @staticmethod
     def _cookie_param(cookie: Dict[str, Any]) -> mycdp.network.CookieParam:
