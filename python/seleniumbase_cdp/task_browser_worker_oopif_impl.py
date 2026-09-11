@@ -81,7 +81,7 @@ class FlatCdpTargetRegistry:
 
     async def _async_main(self) -> None:
         self._stop_event = asyncio.Event()
-        async with websockets.connect(self.websocket_url, ping_timeout=30, max_size=2**24) as ws:
+        async with websockets.connect(self.websocket_url, ping_timeout=30, max_size=2**24, compression=None) as ws:
             self._ws = ws
             reader = asyncio.create_task(self._reader_loop())
             self._ready.set()
