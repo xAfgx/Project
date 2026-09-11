@@ -4,6 +4,11 @@ import json
 import time
 from typing import Any, Callable, Dict, Iterable, List
 
+from cdp_session_recovery import (
+    captcha_frame_recovery,
+    ensure_live_cdp_session,
+    wait_for_document_ready,
+)
 from oopif_visual_interaction_runtime import OopifVisualInteractionRuntime
 from seleniumbase_adapter import SeleniumBaseCdpAdapter
 
@@ -162,8 +167,13 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
         self.note_control_activity()
         pipeline = (
             ("sb-goto", lambda: self._sb.goto(url)),
+            (
+                "cdp-session-recovery",
+                lambda: ensure_live_cdp_session(self._sb, expected_url=url),
+            ),
+            ("document-ready-settle", lambda: wait_for_document_ready(self._sb)),
             ("challenge-stability", self._challenge_tracker.wait_for_stable_challenge),
-            ("seleniumbase-solve-captcha", self._sb.solve_captcha),
+            ("captcha-frame-recovery", lambda: captcha_frame_recovery(self._sb)),
         )
         for stage, action in pipeline:
             started = time.monotonic()

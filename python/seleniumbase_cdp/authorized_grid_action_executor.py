@@ -119,9 +119,30 @@ class AuthorizedGridActionExecutor:
 
           let submitted = false;
           if ({str(submit).lower()}) {{
-            const selector = overrides.submit || 'button[type="submit"],input[type="submit"],button,[role="button"]';
-            const button = [...(group.root.parentElement?.querySelectorAll(selector) || [])]
-              .filter(el => visible(el) && !group.tiles.includes(el))[0];
+            const gridRect = group.tiles.reduce((acc, tile) => {{
+              const r = tile.getBoundingClientRect();
+              return {{left:Math.min(acc.left,r.left),top:Math.min(acc.top,r.top),right:Math.max(acc.right,r.right),bottom:Math.max(acc.bottom,r.bottom)}};
+            }}, {{left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity}});
+            const inPuzzleWindow = el => {{
+              if (!el || !visible(el) || group.tiles.includes(el)) return false;
+              const r = el.getBoundingClientRect();
+              const cx = r.left + r.width / 2;
+              return r.top >= gridRect.top - 12 && r.top <= gridRect.bottom + 260
+                && cx >= gridRect.left - 80 && cx <= gridRect.right + 80;
+            }};
+            let button = null;
+            if (overrides.submit) {{
+              const exact = document.querySelector(overrides.submit);
+              if (exact && visible(exact)) button = exact;
+            }}
+            if (!button) {{
+              const verify = document.querySelector('#recaptcha-verify-button, .rc-button-default');
+              if (inPuzzleWindow(verify)) button = verify;
+            }}
+            if (!button) {{
+              const selector = 'button[type="submit"],input[type="submit"],button,[role="button"]';
+              button = [...(group.root.querySelectorAll(selector) || [])].filter(inPuzzleWindow)[0] || null;
+            }}
             if (button) {{ button.click(); submitted = true; }}
           }}
           return {{clicked, submitted}};

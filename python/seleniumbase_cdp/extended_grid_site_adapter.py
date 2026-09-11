@@ -164,16 +164,36 @@ return (() => {
   };
   const submitFor = tiles => {
     const tileSet = new Set(tiles);
+    const confirmRx = /(verify|submit|bestätig|bestaetig|weiter|continue|prüf|pruef|überprüfen|ueberpruefen|absenden|senden|fertig|abschließ|abschliess|confirm|check|done|next|ok|ja|yes)/i;
+    const challengeRx = /(recaptcha|rc-imageselect|challenge|captcha)/i;
+    const gridRect = tiles.reduce((acc, tile) => {
+      const r = tile.getBoundingClientRect();
+      return {left:Math.min(acc.left,r.left),top:Math.min(acc.top,r.top),right:Math.max(acc.right,r.right),bottom:Math.max(acc.bottom,r.bottom)};
+    }, {left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity});
+    let scopeRoot = document.body || document;
+    for (let node = tiles[0]; node && node !== document; node = node.parentElement) {
+      const cls = typeof node.className === 'string' ? node.className : '';
+      if (challengeRx.test(String(node.id || '') + ' ' + cls)) { scopeRoot = node; break; }
+    }
+    const inPuzzleWindow = el => {
+      if (!el || !visible(el) || tileSet.has(el)) return false;
+      if (scopeRoot.contains && el !== scopeRoot && !scopeRoot.contains(el)) return false;
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      return r.top >= gridRect.top - 12 && r.top <= gridRect.bottom + 260
+        && cx >= gridRect.left - 80 && cx <= gridRect.right + 80;
+    };
     if (overrides.submit) {
       const exact = document.querySelector(overrides.submit);
-      if (exact && visible(exact)) return exact;
+      if (exact && inPuzzleWindow(exact)) return exact;
     }
-    const confirmRx = /(verify|submit|bestätig|bestaetig|weiter|continue|prüf|pruef|absenden|senden|fertig|abschließ|abschliess|confirm|check|done|next|ok|ja|yes)/i;
-    const buttons = [...(document.querySelectorAll?.('button,input[type="submit"],[role="button"]') || [])]
-      .filter(el => visible(el) && !tileSet.has(el));
-    const labelled = buttons.find(el => confirmRx.test(text(el)));
-    if (labelled) return labelled;
-    return buttons.find(el => el.matches?.('button[type="submit"],input[type="submit"]')) || null;
+    const verify = scopeRoot.querySelector?.('#recaptcha-verify-button, .rc-button-default');
+    if (inPuzzleWindow(verify)) return verify;
+    const buttons = [...(scopeRoot.querySelectorAll?.('button,input[type="submit"],[role="button"]') || [])]
+      .filter(inPuzzleWindow);
+    return buttons.find(el => confirmRx.test(text(el)))
+      || buttons.find(el => el.matches?.('button[type="submit"],input[type="submit"]'))
+      || null;
   };
   const complete = Boolean(overrides.complete && visible(document.querySelector(overrides.complete)));
   const failed = Boolean(overrides.failed && visible(document.querySelector(overrides.failed)));
@@ -513,11 +533,39 @@ class ExtendedGridSiteAdapter(GridSiteAdapter):
               : parent.previousElementSibling || parent.parentElement?.querySelector(
                   'h1,h2,h3,h4,p,[class*="instruction" i],[class*="prompt" i],[class*="question" i]'
                 );
-            const submitEl = overrides.submit
-              ? document.querySelector(overrides.submit)
-              : [...(parent.parentElement?.querySelectorAll(
-                  'button[type="submit"],input[type="submit"],button,[role="button"]'
-                ) || [])].find(el => visible(el) && !tiles.includes(el)) || null;
+            const confirmRx = /(verify|submit|bestätig|bestaetig|weiter|continue|prüf|pruef|überprüfen|ueberpruefen|absenden|senden|fertig|abschließ|abschliess|confirm|check|done|next|ok|ja|yes)/i;
+            const challengeRx = /(recaptcha|rc-imageselect|challenge|captcha)/i;
+            const gridRect = tiles.reduce((acc, tile) => {{
+              const r = tile.getBoundingClientRect();
+              return {{left:Math.min(acc.left,r.left),top:Math.min(acc.top,r.top),right:Math.max(acc.right,r.right),bottom:Math.max(acc.bottom,r.bottom)}};
+            }}, {{left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity}});
+            let scopeRoot = parent.parentElement || parent;
+            for (let node = tiles[0]; node && node !== document; node = node.parentElement) {{
+              const cls = typeof node.className === 'string' ? node.className : '';
+              if (challengeRx.test(String(node.id || '') + ' ' + cls)) {{ scopeRoot = node; break; }}
+            }}
+            const inPuzzleWindow = el => {{
+              if (!el || !visible(el) || tiles.includes(el)) return false;
+              if (scopeRoot.contains && el !== scopeRoot && !scopeRoot.contains(el)) return false;
+              const r = el.getBoundingClientRect();
+              const cx = r.left + r.width / 2;
+              return r.top >= gridRect.top - 12 && r.top <= gridRect.bottom + 260
+                && cx >= gridRect.left - 80 && cx <= gridRect.right + 80;
+            }};
+            const findSubmit = () => {{
+              if (overrides.submit) {{
+                const exact = document.querySelector(overrides.submit);
+                if (exact && inPuzzleWindow(exact)) return exact;
+              }}
+              const verify = scopeRoot.querySelector?.('#recaptcha-verify-button, .rc-button-default');
+              if (inPuzzleWindow(verify)) return verify;
+              const buttons = [...(scopeRoot.querySelectorAll?.('button,input[type="submit"],[role="button"]') || [])]
+                .filter(inPuzzleWindow);
+              return buttons.find(el => confirmRx.test(text(el)))
+                || buttons.find(el => el.matches?.('button[type="submit"],input[type="submit"]'))
+                || null;
+            }};
+            const submitEl = findSubmit();
             const instruction = text(instructionEl).slice(0,600);
             const submitText = text(submitEl).slice(0,120);
             const hasActionContext = actionRx.test(instruction + ' ' + submitText);

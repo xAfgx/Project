@@ -5,6 +5,7 @@ import time
 from typing import Any, Dict, Iterable, List, Tuple
 
 from authorized_grid_action_executor import AuthorizedGridActionExecutor
+from cdp_challenge_observer import CdpChallengeObserver
 from cursor_path_provider import CursorPathProvider
 from interaction_policy import InteractionPolicy
 
@@ -67,6 +68,7 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
         self._policy = policy or InteractionPolicy()
         self._cursor = cursor or CursorPathProvider()
         self._cursor_point: Tuple[float, float] | None = None
+        self._challenge_observer = CdpChallengeObserver(seleniumbase_cdp)
 
     def apply(self, indexes: Iterable[int], *, submit: bool = True) -> Dict[str, Any]:
         state = self._site_adapter.poll()
@@ -246,7 +248,14 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
             delay = self._policy.grid_submit_delay_seconds
             if delay > 0:
                 time.sleep(delay)
-            submit_point = self._submit_center(latest) or self._confirmation_center()
+            challenge_present = self._challenge_active()
+            window = self._puzzle_window(latest)
+            submit_point = (
+                self._preferred_submit_point(window)
+                or self._confirmation_center(latest)
+            )
+            if submit_point is None and not challenge_present:
+                submit_point = self._submit_center(latest)
             if submit_point is not None:
                 submitted = self._cdp_click_to(submit_point, latest)
 
@@ -354,70 +363,33 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
         value = result.get("value")
         return value if isinstance(value, bool) else None
 
-    def _confirmation_center(self) -> Tuple[float, float] | None:
-        overrides = getattr(self._site_adapter, "_overrides", {})
-        selector = overrides.get("submit") or 'button[type="submit"],input[type="submit"],button,[role="button"]'
-        script = f"""
-        (() => {{
-          const selector = {json.dumps(selector)};
-          const accepted = new Set({json.dumps(list(_CONFIRM_TEXT))});
-          const norm = value => String(value || '').trim().toLowerCase().replace(/\\s+/g, ' ');
-          const confirmMatch = value => {{
-            if (accepted.has(value)) return true;
-            for (const word of accepted) {{
-              if (word.length >= 3 && value.includes(word)) return true;
-            }}
-            return false;
-          }};
-          const visible = el => {{
-            if (!el?.getBoundingClientRect) return false;
-            const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-            return r.width >= 20 && r.height >= 20 &&
-              s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0;
-          }};
-          const roots = [];
-          const walk = (doc, offsetX, offsetY) => {{
-            if (!doc) return;
-            roots.push({{doc, offsetX, offsetY}});
-            for (const frame of doc.querySelectorAll?.('iframe') || []) {{
-              try {{
-                if (!frame.contentDocument) continue;
-                const r = frame.getBoundingClientRect();
-                walk(frame.contentDocument, offsetX + r.left, offsetY + r.top);
-              }} catch (_) {{}}
-            }}
-          }};
-          walk(document, 0, 0);
+    def _confirmation_center(self, state: Dict[str, Any] | None = None) -> Tuple[float, float] | None:
+        """Locate a confirm/continue control via the passive DOM-domain walk.
 
-          const candidates = [];
-          for (const root of roots) {{
-            for (const el of root.doc.querySelectorAll?.(selector) || []) {{
-              if (!visible(el)) continue;
-              const text = norm(el.innerText || el.textContent || el.value || el.getAttribute('aria-label'));
-              if (!confirmMatch(text) && !{str(bool(overrides.get("submit"))).lower()}) continue;
-              const r = el.getBoundingClientRect();
-              candidates.push({{
-                x: root.offsetX + r.left + r.width / 2,
-                y: root.offsetY + r.top + r.height / 2,
-                preferred: confirmMatch(text)
-              }});
-            }}
-          }}
-          candidates.sort((a, b) => Number(b.preferred) - Number(a.preferred));
-          return candidates[0] || null;
-        }})()
+        No JavaScript is injected for frame element discovery. The recursive
+        walk uses DOM.describeNode -> contentDocument and DOM.getContentQuads,
+        which already returns top-level viewport coordinates.
         """
-        try:
-            value = self._evaluate(script)
-            if not isinstance(value, dict):
-                return None
-            x = float(value.get("x"))
-            y = float(value.get("y"))
-            if x < 0 or y < 0:
-                return None
-            return (x, y)
-        except Exception:
+        overrides = getattr(self._site_adapter, "_overrides", {})
+        window = self._puzzle_window(state) if isinstance(state, dict) else None
+        return self._challenge_observer.confirmation_center(
+            window=window,
+            accepted_texts=_CONFIRM_TEXT,
+            override_selector=overrides.get("submit"),
+            grid_in_frame=self._grid_in_frame(state),
+        )
+
+    @staticmethod
+    def _grid_in_frame(state: Dict[str, Any] | None) -> bool | None:
+        """True/False when the grid scope is known, None when undetectable."""
+        if not isinstance(state, dict):
             return None
+        scope = str(state.get("scope") or "")
+        if not scope:
+            return None
+        if scope.startswith("oopif:") or "iframe" in scope:
+            return True
+        return False
 
     def _oopif_submit_center(self, state: Dict[str, Any]) -> Tuple[float, float] | None:
         """Find the submit button inside the OOPIF grid frame and return its
@@ -442,7 +414,8 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
             return r.width >= 20 && r.height >= 20 && s.display !== 'none' && s.visibility !== 'hidden' && Number(s.opacity || 1) > 0;
           };
           const els = [...(document.querySelectorAll?.('button,input[type="submit"],[role="button"]') || [])].filter(visible);
-          const match = els.find(el => rx.test((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim()));
+          const preferred = els.find(el => el.matches?.('#recaptcha-verify-button, .rc-button-default')) || null;
+          const match = preferred || els.find(el => rx.test((el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim()));
           if (!match) return null;
           const r = match.getBoundingClientRect();
           return {x: r.left + r.width / 2, y: r.top + r.height / 2};
@@ -732,19 +705,76 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
         return (min_x + col * pitch_x, min_y + row * pitch_y)
 
     def _fresh_submit_point(self, state: Dict[str, Any]) -> Tuple[float, float] | None:
-        """Resolve the confirm button from the live DOM.
+        """Resolve the confirm button from the live DOM, scoped to the puzzle.
 
-        Prefer a fresh lookup (OOPIF evaluate / frame walk) over the pre-click
-        submitBounds, because reCAPTCHA shifts the button after the tiles are
-        selected and only then flips it from disabled to active."""
-        return (
-            self._oopif_submit_center(state)
-            or self._confirmation_center()
-            or self._submit_center(state)
+        Prefer a fresh lookup (passive DOM-domain query / OOPIF evaluate) over
+        the pre-click submitBounds, because reCAPTCHA shifts the button after
+        the tiles are selected and only then flips it from disabled to active.
+        While a challenge window is visible, main-page controls outside the
+        puzzle window are never used.
+        """
+        challenge_present = self._challenge_active()
+        window = self._puzzle_window(state)
+        point = (
+            self._preferred_submit_point(window)
+            or self._oopif_submit_center(state)
+            or self._confirmation_center(state)
         )
+        if point is None and challenge_present:
+            return None
+        return point or self._submit_center(state)
 
-    @staticmethod
-    def _submit_center(state: Dict[str, Any]) -> Tuple[float, float] | None:
+    def _preferred_submit_point(
+        self,
+        window: Dict[str, float] | None,
+    ) -> Tuple[float, float] | None:
+        """Provider verify button via the passive CDP DOM observer (no JS)."""
+        return self._challenge_observer.preferred_submit_center(window=window)
+
+    def _challenge_active(self) -> bool:
+        """True while a CAPTCHA challenge window is visibly present on screen.
+
+        Passive DOM-domain detection only; no Runtime.evaluate JavaScript.
+        """
+        return self._challenge_observer.present()
+
+    @classmethod
+    def _puzzle_window(cls, state: Dict[str, Any] | None) -> Dict[str, float] | None:
+        """Bounding window around the grid tiles that still counts as the puzzle."""
+        if not isinstance(state, dict):
+            return None
+        lefts: List[float] = []
+        tops: List[float] = []
+        rights: List[float] = []
+        bottoms: List[float] = []
+        for mark in cls._grid_marks(state):
+            bounds = mark.get("visualBounds")
+            if not isinstance(bounds, dict):
+                continue
+            try:
+                x = float(bounds.get("x") or 0.0)
+                y = float(bounds.get("y") or 0.0)
+                width = float(bounds.get("width") or 0.0)
+                height = float(bounds.get("height") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if width <= 0 or height <= 0:
+                continue
+            lefts.append(x)
+            tops.append(y)
+            rights.append(x + width)
+            bottoms.append(y + height)
+        if not lefts:
+            return None
+        return {
+            "left": min(lefts) - 40.0,
+            "top": min(tops) - 12.0,
+            "right": max(rights) + 40.0,
+            "bottom": max(bottoms) + 200.0,
+        }
+
+    @classmethod
+    def _submit_center(cls, state: Dict[str, Any]) -> Tuple[float, float] | None:
         bounds = state.get("submitBounds")
         if not isinstance(bounds, dict):
             return None
@@ -757,7 +787,14 @@ class ProximityGridActionExecutor(AuthorizedGridActionExecutor):
             return None
         if width <= 0 or height <= 0:
             return None
-        return (x + width / 2.0, y + height / 2.0)
+        point = (x + width / 2.0, y + height / 2.0)
+        window = cls._puzzle_window(state)
+        if window is not None and not (
+            window["left"] <= point[0] <= window["right"]
+            and window["top"] <= point[1] <= window["bottom"]
+        ):
+            return None
+        return point
 
     def _sleep_between_clicks(self) -> None:
         delay = self._policy.grid_click_delay_seconds

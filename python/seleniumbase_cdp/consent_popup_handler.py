@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import json
+import random
+import time
 from typing import Any, Dict, Iterable
+
+from cdp_challenge_observer import CdpChallengeObserver
+from cdp_session_recovery import ensure_live_cdp_session
+from cursor_path_provider import CursorPathProvider
+
+_READY_GATE_TIMEOUT_SECONDS = 2.0
 
 
 _DIALOG_SELECTORS = (
@@ -100,8 +108,14 @@ class ConsentPopupHandler:
 
     def __init__(self, seleniumbase_cdp: Any) -> None:
         self._sb = seleniumbase_cdp
+        self._cursor = CursorPathProvider()
+        self._pointer_x: float | None = None
+        self._pointer_y: float | None = None
+        self._challenge_observer = CdpChallengeObserver(seleniumbase_cdp)
 
     def dismiss_once(self) -> Dict[str, Any]:
+        if not self._wait_for_interactive():
+            return {'dismissed': False, 'reason': 'document-not-interactive'}
         cdp = getattr(self._sb, 'cdp', self._sb)
         if cdp is None:
             return {'dismissed': False, 'reason': 'cdp-unavailable'}
@@ -147,6 +161,61 @@ class ConsentPopupHandler:
 
         return {'dismissed': False, 'reason': 'no-explicit-consent-control'}
 
+    def _fresh_evaluate(self, script: str) -> Any:
+        """Run JS on the live document, re-binding CDP and retrying once.
+
+        After a same-tab navigation the cached session can be stale, which makes
+        old element/shadow references unusable. The script is always evaluated
+        against the current document; if the first attempt fails or returns
+        nothing, the CDP session is re-bound to the live target and retried.
+        """
+        for attempt in range(2):
+            evaluator = getattr(self._sb, 'evaluate', None)
+            executor = getattr(self._sb, 'execute_script', None)
+            try:
+                if callable(evaluator):
+                    return evaluator(script)
+                if callable(executor):
+                    return executor(f"return {script};")
+                return None
+            except Exception:
+                pass
+            if attempt == 0:
+                try:
+                    ensure_live_cdp_session(self._sb)
+                except Exception:
+                    pass
+        return None
+
+    def _document_state(self) -> str | None:
+        value = self._fresh_evaluate("document.readyState")
+        state = str(value or '').strip().lower()
+        if state in {'loading', 'interactive', 'complete'}:
+            return state
+        return None
+
+    def _wait_for_interactive(self, timeout: float = _READY_GATE_TIMEOUT_SECONDS) -> bool:
+        """Gate clicks until the document is at least 'interactive'.
+
+        Unknown state fails open to preserve the established CDP query path.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        state = self._document_state()
+        while state == 'loading' and time.monotonic() <= deadline:
+            time.sleep(0.1)
+            state = self._document_state()
+        if state is None:
+            return True
+        return state in {'interactive', 'complete'}
+
+    def _challenge_active(self) -> bool:
+        """True while a CAPTCHA/challenge window is visibly present on screen.
+
+        Passive DOM-domain detection only (DOM.getDocument/querySelectorAll/
+        getBoxModel); no Runtime.evaluate JavaScript.
+        """
+        return self._challenge_observer.present()
+
     def _click_oopif(self) -> Dict[str, Any]:
         discover = getattr(self._sb, "ares_oopif_discover", None)
         evaluate = getattr(self._sb, "ares_oopif_evaluate", None)
@@ -190,11 +259,7 @@ class ConsentPopupHandler:
     def _click_shadow_accept(self) -> Dict[str, Any]:
         """Find an accept/consent button spanning Shadow DOM roots and click it."""
         script = self._shadow_accept_script()
-        try:
-            evaluator = getattr(self._sb, 'evaluate', None)
-            value = evaluator(script) if callable(evaluator) else self._sb.execute_script(f"return {script};")
-        except Exception:
-            return {'dismissed': False}
+        value = self._fresh_evaluate(script)
         if not isinstance(value, dict) or not isinstance(value.get('rect'), dict):
             return {'dismissed': False}
         rect = value['rect']
@@ -242,14 +307,21 @@ class ConsentPopupHandler:
     '[data-testid*="accept" i]',
     '[class*="accept-all" i], [id*="accept-all" i]',
   ];
-  const seek = node => {
+  const frameOffset = (el, offX, offY) => {
+    try {
+      const r = el.getBoundingClientRect();
+      return [offX + r.x + Number(el.clientLeft || 0), offY + r.y + Number(el.clientTop || 0)];
+    } catch (_) { return null; }
+  };
+  const seek = (node, offX, offY) => {
+    offX = Number(offX || 0); offY = Number(offY || 0);
     if (!node) return null;
     for (const selector of stable) {
       try {
         const found = node.querySelector(selector);
         if (found && visible(found) && matches(textOf(found))) {
           const r = found.getBoundingClientRect();
-          return { rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+          return { rect: { x: r.x + offX, y: r.y + offY, width: r.width, height: r.height } };
         }
       } catch (_) {}
     }
@@ -258,25 +330,53 @@ class ConsentPopupHandler:
         for (const el of node.querySelectorAll(selector) || []) {
           if (visible(el) && matches(textOf(el))) {
             const r = el.getBoundingClientRect();
-            return { rect: { x: r.x, y: r.y, width: r.width, height: r.height } };
+            return { rect: { x: r.x + offX, y: r.y + offY, width: r.width, height: r.height } };
           }
         }
       } catch (_) {}
     }
     try {
+      for (const el of node.querySelectorAll('iframe,frame') || []) {
+        try {
+          if (el.contentDocument) {
+            const off = frameOffset(el, offX, offY);
+            if (off) { const found = seek(el.contentDocument, off[0], off[1]); if (found) return found; }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+    try {
       for (const el of node.querySelectorAll('*') || []) {
-        if (el.shadowRoot) { const found = seek(el.shadowRoot); if (found) return found; }
+        if (el.shadowRoot) { const found = seek(el.shadowRoot, offX, offY); if (found) return found; }
       }
     } catch (_) {}
     return null;
   };
-  return seek(document) || null;
+  return seek(document, 0, 0) || null;
 })()
 """
 
+    def _pointer_start(self) -> tuple[float, float]:
+        if self._pointer_x is not None and self._pointer_y is not None:
+            return (self._pointer_x, self._pointer_y)
+        return self._cursor.random_start()
+
     def _cdp_click(self, x: float, y: float) -> bool:
+        target = (float(x), float(y))
         try:
-            import mycdp
+            planned = self._cursor.play_click(self._sb, self._pointer_start(), target)
+        except Exception:
+            planned = {"clicked": False}
+        if planned.get("clicked"):
+            self._pointer_x, self._pointer_y = target
+            return True
+        if self._raw_cdp_click(target[0], target[1]):
+            self._pointer_x, self._pointer_y = target
+            return True
+        return False
+
+    def _raw_cdp_click(self, x: float, y: float) -> bool:
+        try:
             from mycdp import input_ as cdp_input
         except Exception:
             return False
@@ -290,6 +390,7 @@ class ConsentPopupHandler:
             button = cdp_input.MouseButton("left")
             event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mouseMoved", x=x, y=y, button=button, buttons=0, pointer_type="mouse")))
             event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mousePressed", x=x, y=y, button=button, buttons=1, click_count=1, pointer_type="mouse")))
+            time.sleep(random.uniform(0.045, 0.115))
             event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mouseReleased", x=x, y=y, button=button, buttons=0, click_count=1, pointer_type="mouse")))
             return True
         except Exception:
@@ -297,11 +398,7 @@ class ConsentPopupHandler:
 
     def _click_shadow_js(self) -> Dict[str, Any]:
         script = self._shadow_click_script()
-        try:
-            evaluator = getattr(self._sb, 'evaluate', None)
-            value = evaluator(script) if callable(evaluator) else self._sb.execute_script(f"return {script};")
-        except Exception:
-            return {'dismissed': False}
+        value = self._fresh_evaluate(script)
         if not isinstance(value, dict) or not isinstance(value.get('x'), (int, float)):
             return {'dismissed': False}
         try:
@@ -344,34 +441,46 @@ class ConsentPopupHandler:
     '[id*="accept" i] button, button[id*="accept" i]',
     '[data-testid*="accept" i]',
   ];
-  const seek = node => {
+  const frameOffset = (el, offX, offY) => {
+    try {
+      const r = el.getBoundingClientRect();
+      return [offX + r.x + Number(el.clientLeft || 0), offY + r.y + Number(el.clientTop || 0)];
+    } catch (_) { return null; }
+  };
+  const seek = (node, offX, offY) => {
+    offX = Number(offX || 0); offY = Number(offY || 0);
     if (!node) return null;
     for (const selector of stable) {
       try {
         const found = node.querySelector(selector);
-        if (found && visible(found) && matches(textOf(found))) { const r = found.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }
+        if (found && visible(found) && matches(textOf(found))) { const r = found.getBoundingClientRect(); return {x:r.x + offX,y:r.y + offY,w:r.width,h:r.height}; }
       } catch (_) {}
     }
     for (const selector of ['button', 'input[type="submit"]', 'input[type="button"]', '[role="button"]', 'a[href]']) {
       try {
         for (const el of node.querySelectorAll(selector) || []) {
-          if (visible(el) && matches(textOf(el))) { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }
+          if (visible(el) && matches(textOf(el))) { const r = el.getBoundingClientRect(); return {x:r.x + offX,y:r.y + offY,w:r.width,h:r.height}; }
         }
       } catch (_) {}
     }
     try {
-      for (const el of node.querySelectorAll('iframe') || []) {
-        try { if (el.contentDocument) { const found = seek(el.contentDocument); if (found) return found; } } catch (_) {}
+      for (const el of node.querySelectorAll('iframe,frame') || []) {
+        try {
+          if (el.contentDocument) {
+            const off = frameOffset(el, offX, offY);
+            if (off) { const found = seek(el.contentDocument, off[0], off[1]); if (found) return found; }
+          }
+        } catch (_) {}
       }
     } catch (_) {}
     try {
       for (const el of node.querySelectorAll('*') || []) {
-        if (el.shadowRoot) { const found = seek(el.shadowRoot); if (found) return found; }
+        if (el.shadowRoot) { const found = seek(el.shadowRoot, offX, offY); if (found) return found; }
       }
     } catch (_) {}
     return null;
   };
-  return seek(document);
+  return seek(document, 0, 0);
 })()
 """
 
@@ -387,6 +496,11 @@ class ConsentPopupHandler:
         cdp = getattr(self._sb, 'cdp', self._sb)
         if cdp is None:
             return {'advanced': False, 'reason': 'cdp-unavailable'}
+        if self._challenge_active():
+            # Main-page progression is locked while a puzzle/challenge window is
+            # on screen; only after it is solved and fully gone may the flow
+            # continue to confirm/checkout controls.
+            return {'advanced': False, 'reason': 'challenge-active'}
         candidates = tuple(str(value) for value in values)
         if not self._candidate_exists(candidates):
             return {'advanced': False, 'reason': empty_reason}
@@ -460,18 +574,12 @@ class ConsentPopupHandler:
           return scan(document);
         }})()
         """
-        try:
-            evaluator = getattr(self._sb, 'evaluate', None)
-            if callable(evaluator):
-                return bool(evaluator(script))
-            executor = getattr(self._sb, 'execute_script', None)
-            if callable(executor):
-                return bool(executor(f"return {script};"))
-        except Exception:
+        value = self._fresh_evaluate(script)
+        if value is None:
             # Fail open to the established CDP query path when cheap observation
             # itself is unavailable; behavior is preserved rather than skipped.
             return True
-        return True
+        return bool(value)
 
     def _click_in_root(self, root: Any, *, fallback: bool = False) -> Dict[str, Any]:
         strong = (

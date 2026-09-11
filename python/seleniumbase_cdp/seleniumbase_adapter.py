@@ -11,8 +11,14 @@ import mycdp
 import psutil
 from seleniumbase import sb_cdp
 
+from base_target_adapter import BaseTargetAdapter
 from challenge_state_tracker import ChallengeStateTracker
 from cdp_fetch_bridge import NetworkAnomalyEliminator, CDPFetchBridge
+from cdp_session_recovery import (
+    captcha_frame_recovery,
+    ensure_live_cdp_session,
+    wait_for_document_ready,
+)
 from instruction_input_runtime import InstructionInputRuntime
 from interaction_orchestrator import InteractionOrchestrator
 from interaction_outcome import from_semantic_result, from_visual_result
@@ -26,7 +32,7 @@ from visual_interaction_runtime import VisualInteractionRuntime
 from webrtc_proxy_policy import install_webrtc_proxy_policy
 
 
-class SeleniumBaseCdpAdapter:
+class SeleniumBaseCdpAdapter(BaseTargetAdapter):
     """Single ARES boundary around SeleniumBase Pure CDP / MyCDP."""
 
     def __init__(
@@ -40,7 +46,10 @@ class SeleniumBaseCdpAdapter:
         browser_args: Iterable[str] | None = None,
         language: str | None = None,
         timezone: str | None = None,
+        target_id: str | None = None,
+        account_id: str | None = None,
     ) -> None:
+        self.bind_identity(target_id=target_id, account_id=account_id)
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_identity = BrowserRuntimeIdentity.create(self.profile_dir)
@@ -412,8 +421,10 @@ class SeleniumBaseCdpAdapter:
 
     def goto(self, url: str) -> None:
         self._sb.goto(url)
+        ensure_live_cdp_session(self._sb, expected_url=url)
+        wait_for_document_ready(self._sb)
         self._challenge_tracker.wait_for_stable_challenge()
-        self._sb.solve_captcha()
+        captcha_frame_recovery(self._sb)
         self._watchdog.reset()
         initial = self._watchdog.poll()
         self._last_watchdog_state = initial
@@ -422,6 +433,10 @@ class SeleniumBaseCdpAdapter:
 
     def challenge_state(self) -> Dict[str, Any]:
         return self._challenge_tracker.poll()
+
+    def check_challenge(self) -> Dict[str, Any]:
+        """BaseTargetAdapter contract: observe the current gate/challenge."""
+        return self.challenge_state()
 
     def site_grid_state(self) -> Dict[str, Any]:
         return self._visual_interactions.grid_state()
@@ -468,6 +483,10 @@ class SeleniumBaseCdpAdapter:
             return {**result, "outcome": outcome}
 
         return self._orchestrator.run_action("semantic", action)
+
+    def execute_flow(self, flow: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+        """BaseTargetAdapter contract: run a target-agnostic action flow."""
+        return self.execute_semantic_plan(flow)
 
     def apply_grid_selection(self, indexes: Iterable[int], *, submit: bool = True) -> Dict[str, Any]:
         selected = list(indexes)

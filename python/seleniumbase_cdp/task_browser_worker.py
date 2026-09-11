@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import queue
+import random
 import re
 import sys
 import threading
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List
 
 import mycdp
+from cursor_path_provider import CursorPathProvider
 from seleniumbase_adapter import SeleniumBaseCdpAdapter
 
 PREFIX = "ARES_SB_TASK\t"
@@ -558,7 +560,29 @@ return {x, y};
         loop = self.sb.get_event_loop()
         loop.run_until_complete(tab.send(dispatch(**kwargs)))
 
+    def _cursor_paths(self) -> CursorPathProvider:
+        provider = getattr(self, "_cursor_provider", None)
+        if provider is None:
+            provider = CursorPathProvider()
+            self._cursor_provider = provider
+        return provider
+
+    def _pointer_origin(self) -> tuple[float, float]:
+        x = getattr(self, "_pointer_x", None)
+        y = getattr(self, "_pointer_y", None)
+        if x is None or y is None:
+            return self._cursor_paths().random_start()
+        return (float(x), float(y))
+
     def _dispatch_native_click(self, x: float, y: float) -> None:
+        target = (float(x), float(y))
+        try:
+            planned = self._cursor_paths().play_click(self.sb, self._pointer_origin(), target)
+        except Exception:
+            planned = {"clicked": False}
+        if planned.get("clicked"):
+            self._pointer_x, self._pointer_y = target
+            return
         input_domain = getattr(mycdp, "input_", None)
         mouse_button = getattr(input_domain, "MouseButton", None)
         left = getattr(mouse_button, "LEFT", None)
@@ -566,7 +590,9 @@ return {x, y};
             raise RuntimeError("CDP left mouse button enum is unavailable")
         self._dispatch_mouse_event("mouseMoved", x, y, buttons=0)
         self._dispatch_mouse_event("mousePressed", x, y, button=left, buttons=1, click_count=1)
+        time.sleep(random.uniform(0.045, 0.115))
         self._dispatch_mouse_event("mouseReleased", x, y, button=left, buttons=0, click_count=1)
+        self._pointer_x, self._pointer_y = target
 
     def _native_locator_click(
         self,
@@ -717,6 +743,7 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
             return False
         if action == "mouse-move":
             self._dispatch_mouse_event("mouseMoved", x, y, buttons=0)
+            self._pointer_x, self._pointer_y = x, y
             return True
         self._dispatch_native_click(x, y)
         self._sync_newest_target()
@@ -738,6 +765,8 @@ def run(start: Dict[str, Any]) -> int:
         browser_args=[str(v) for v in start.get("browserArgs") or []],
         language=language,
         timezone=str(start.get("timezoneId") or "").strip() or None,
+        target_id=str(start.get("targetId") or "").strip() or None,
+        account_id=str(start.get("accountId") or "").strip() or None,
     )
     runtime = TaskRpcRuntime(adapter, user_agent=user_agent, language=language)
 

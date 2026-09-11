@@ -74,6 +74,13 @@ class CursorPathProvider:
         result.append(end)
         return self._clean_points(result)
 
+    def random_start(self, width: float = 1024.0, height: float = 768.0) -> Point:
+        """Return a plausible off-target cursor origin inside the viewport."""
+        return (
+            self._rng.uniform(float(width) * 0.06, float(width) * 0.94),
+            self._rng.uniform(float(height) * 0.08, float(height) * 0.92),
+        )
+
     def scroll_random(self, seleniumbase_cdp: Any, *, max_steps: int = 2) -> None:
         """Emit small, human-looking mouseWheel scrolls via CDP before an action."""
         context = self._cdp_context(seleniumbase_cdp)
@@ -176,9 +183,8 @@ class CursorPathProvider:
             return None
         return None if tab is None or loop is None else (tab, loop)
 
-    @classmethod
-    def _play_cdp_click(cls, seleniumbase_cdp: Any, points: List[Point]) -> Tuple[bool, str]:
-        context = cls._cdp_context(seleniumbase_cdp)
+    def _play_cdp_click(self, seleniumbase_cdp: Any, points: List[Point]) -> Tuple[bool, str]:
+        context = self._cdp_context(seleniumbase_cdp)
         if context is None:
             return False, "no-cdp-context"
         tab, loop = context
@@ -186,20 +192,23 @@ class CursorPathProvider:
         # jumps that anti-bot systems treat as teleportation and discard, and a
         # gentle logarithmic ease-out near the target lets the tile's hover
         # state fire before the press.
-        click_points = cls._shorten_points(points, 20)
+        click_points = self._shorten_points(points, 20)
+        pre_press = self._rng.uniform(0.02, 0.055)
+        press_hold = self._rng.uniform(0.045, 0.125)
 
         async def click() -> None:
             button = cdp_input.MouseButton("left")
             count = len(click_points)
             for index, (x, y) in enumerate(click_points):
-                await tab.send(cdp_input.dispatch_mouse_event("mouseMoved", x=x, y=y, button=button, buttons=0))
+                await tab.send(cdp_input.dispatch_mouse_event("mouseMoved", x=x, y=y, button=button, buttons=0, pointer_type="mouse"))
                 t = index / max(1, count - 1)
                 # Fast far from the target, decelerating into it (ease-out).
                 await asyncio.sleep(0.008 + 0.024 * (t * t))
             x, y = click_points[-1]
-            await tab.send(cdp_input.dispatch_mouse_event("mousePressed", x=x, y=y, button=button, buttons=1, click_count=1))
-            await asyncio.sleep(0.03)
-            await tab.send(cdp_input.dispatch_mouse_event("mouseReleased", x=x, y=y, button=button, buttons=0, click_count=1))
+            await asyncio.sleep(pre_press)
+            await tab.send(cdp_input.dispatch_mouse_event("mousePressed", x=x, y=y, button=button, buttons=1, click_count=1, pointer_type="mouse"))
+            await asyncio.sleep(press_hold)
+            await tab.send(cdp_input.dispatch_mouse_event("mouseReleased", x=x, y=y, button=button, buttons=0, click_count=1, pointer_type="mouse"))
 
         try:
             loop.run_until_complete(asyncio.wait_for(click(), timeout=3.0))
@@ -215,7 +224,7 @@ class CursorPathProvider:
                 loop.run_until_complete(asyncio.sleep(0))
             except Exception:
                 pass
-            cls._close_connection(tab, loop)
+            self._close_connection(tab, loop)
             return False, "timeout"
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"

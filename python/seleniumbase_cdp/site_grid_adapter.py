@@ -199,9 +199,39 @@ class GridSiteAdapter:
                 score:index,
               }}));
               const instructionEl = instructionNear(root, group.root);
-              const submitEl = overrides.submit
-                ? root.querySelector(overrides.submit)
-                : [...(group.root.parentElement?.querySelectorAll('button[type="submit"],input[type="submit"],button,[role="button"]') || [])].find(el => visible(el) && !group.tiles.includes(el)) || null;
+              const confirmRx = /(verify|submit|bestätig|bestaetig|weiter|continue|prüf|pruef|überprüfen|ueberpruefen|absenden|senden|confirm|check|done|next|ok|ja|yes)/i;
+              const challengeRx = /(recaptcha|rc-imageselect|challenge|captcha)/i;
+              const gridRect = group.tiles.reduce((acc, tile) => {{
+                const r = tile.getBoundingClientRect();
+                return {{left:Math.min(acc.left,r.left),top:Math.min(acc.top,r.top),right:Math.max(acc.right,r.right),bottom:Math.max(acc.bottom,r.bottom)}};
+              }}, {{left:Infinity,top:Infinity,right:-Infinity,bottom:-Infinity}});
+              let scopeRoot = group.root.parentElement || group.root;
+              for (let node = group.tiles[0]; node && node !== document; node = node.parentElement) {{
+                const cls = typeof node.className === 'string' ? node.className : '';
+                if (challengeRx.test(String(node.id || '') + ' ' + cls)) {{ scopeRoot = node; break; }}
+              }}
+              const inPuzzleWindow = el => {{
+                if (!el || !visible(el) || group.tiles.includes(el)) return false;
+                if (scopeRoot.contains && el !== scopeRoot && !scopeRoot.contains(el)) return false;
+                const r = el.getBoundingClientRect();
+                const cx = r.left + r.width / 2;
+                return r.top >= gridRect.top - 12 && r.top <= gridRect.bottom + 260
+                  && cx >= gridRect.left - 80 && cx <= gridRect.right + 80;
+              }};
+              let submitEl = null;
+              if (overrides.submit) {{
+                const exact = root.querySelector(overrides.submit);
+                if (exact && inPuzzleWindow(exact)) submitEl = exact;
+              }}
+              if (!submitEl) {{
+                const verify = scopeRoot.querySelector?.('#recaptcha-verify-button, .rc-button-default');
+                if (inPuzzleWindow(verify)) submitEl = verify;
+              }}
+              if (!submitEl) {{
+                const buttons = [...(scopeRoot.querySelectorAll?.('button,input[type="submit"],[role="button"]') || [])]
+                  .filter(inPuzzleWindow);
+                submitEl = buttons.find(el => confirmRx.test(text(el))) || null;
+              }}
               let score = 40;
               score += sourceCount === count ? 25 : Math.round(15*sourceCount/count);
               score += Math.round(15*regular/count);
