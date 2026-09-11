@@ -143,36 +143,38 @@
           <div class="table-head"><span>Task</span><span>Route</span><span>Status</span><span>Retries</span><span>Controls</span></div>
           <div class="empty" *ngIf="!tasks.length">No tasks created yet.</div>
 
-          <article class="task-item" *ngFor="let task of tasks.slice().reverse(); trackBy: trackTask">
-            <div class="task-main">
-              <i [class.active]="isPausable(task)" [class.paused]="isResumable(task)"></i>
-              <div><strong>{{ task.config.name }}</strong><small>{{ getTaskKind(task) }} · {{ task.config.shopId || 'No shop' }}</small></div>
-            </div>
-            <div class="route"><strong>{{ getTaskProfileName(task) }}</strong><small>{{ getTaskProxyStatus(task) }}</small></div>
-            <span class="state" [ngClass]="task.state.toLowerCase()">{{ task.state }}</span>
-            <span class="retry">{{ task.retries ?? 0 }} / {{ task.maxRetries ?? 0 }}</span>
-            <div class="row-actions">
-              <button *ngIf="isStartable(task)" class="icon primary-icon" title="Start task" (click)="startTask(task.id)">▶</button>
-              <button *ngIf="isPausable(task)" class="icon" title="Pause task" (click)="pauseTask(task.id)">Ⅱ</button>
-              <button *ngIf="isResumable(task)" class="icon primary-icon" title="Resume task" (click)="resumeTask(task.id)">▶</button>
-              <button *ngIf="isStoppable(task)" class="icon danger-icon" title="Stop task" (click)="stopTask(task.id)">■</button>
-              <button *ngIf="isRestartable(task)" class="icon primary-icon" title="Neu starten" (click)="restartTask(task.id)">↻</button>
-              <button class="icon danger-icon" title="Task löschen" (click)="deleteTask(task.id)">×</button>
-              <button class="icon" title="Logs" (click)="toggleTaskLogs(task.id)">···</button>
-            </div>
+          <div class="task-list-reversed">
+            <article class="task-item" *ngFor="let task of tasks; trackBy: trackTask">
+              <div class="task-main">
+                <i [class.active]="isPausable(task)" [class.paused]="isResumable(task)"></i>
+                <div><strong>{{ task.config.name }}</strong><small>{{ getTaskKind(task) }} · {{ task.config.shopId || 'No shop' }}</small></div>
+              </div>
+              <div class="route"><strong>{{ getTaskProfileName(task) }}</strong><small>{{ getTaskProxyStatus(task) }}</small></div>
+              <span class="state" [ngClass]="task.state.toLowerCase()">{{ task.state }}</span>
+              <span class="retry">{{ task.retries ?? 0 }} / {{ task.maxRetries ?? 0 }}</span>
+              <div class="row-actions">
+                <button *ngIf="isStartable(task)" class="icon primary-icon" title="Start task" (click)="startTask(task.id)">▶</button>
+                <button *ngIf="isPausable(task)" class="icon" title="Pause task" (click)="pauseTask(task.id)">Ⅱ</button>
+                <button *ngIf="isResumable(task)" class="icon primary-icon" title="Resume task" (click)="resumeTask(task.id)">▶</button>
+                <button *ngIf="isStoppable(task)" class="icon danger-icon" title="Stop task" (click)="stopTask(task.id)">■</button>
+                <button *ngIf="isRestartable(task)" class="icon primary-icon" title="Neu starten" (click)="restartTask(task.id)">↻</button>
+                <button class="icon danger-icon" title="Task löschen" (click)="deleteTask(task.id)">×</button>
+                <button class="icon" title="Logs" (click)="toggleTaskLogs(task.id)">···</button>
+              </div>
 
-            <div class="task-wide" *ngIf="isAutoCheckoutTask(task) || isEarlyGateFlowTask(task) || task.lastError">
-              <span *ngIf="isAutoCheckoutTask(task)"><b>Automation</b> {{ getTaskAutomationStatus(task) }}</span>
-              <span *ngIf="isEarlyGateFlowTask(task)"><b>Area</b> {{ getActiveArea(task) }}</span>
-              <span class="err" *ngIf="task.lastError">{{ task.lastError }}</span>
-            </div>
+              <div class="task-wide" *ngIf="isAutoCheckoutTask(task) || isEarlyGateFlowTask(task) || task.lastError">
+                <span *ngIf="isAutoCheckoutTask(task)"><b>Automation</b> {{ getTaskAutomationStatus(task) }}</span>
+                <span *ngIf="isEarlyGateFlowTask(task)"><b>Area</b> {{ getActiveArea(task) }}</span>
+                <span class="err" *ngIf="task.lastError">{{ task.lastError }}</span>
+              </div>
 
-            <div class="task-logs" *ngIf="expandedTaskLogId === task.id">
-              <div class="log-top"><strong>Runtime log</strong><button class="ghost" (click)="loadTaskLogs(task.id)">Refresh</button></div>
-              <div class="empty" *ngIf="!taskLogs[task.id] || !taskLogs[task.id].length">No log entries.</div>
-              <div class="log-line" *ngFor="let log of taskLogs[task.id]" [class.warn]="log.level === 'warn'" [class.error]="log.level === 'error'"><time>{{ log.createdAt | date:'HH:mm:ss' }}</time><b>{{ log.event }}</b><span>{{ log.message }}</span></div>
-            </div>
-          </article>
+              <div class="task-logs" *ngIf="expandedTaskLogId === task.id">
+                <div class="log-top"><strong>Runtime log</strong><button class="ghost" (click)="loadTaskLogs(task.id)">Refresh</button></div>
+                <div class="empty" *ngIf="!taskLogs[task.id] || !taskLogs[task.id].length">No log entries.</div>
+                <div class="log-line" *ngFor="let log of taskLogs[task.id]" [class.warn]="log.level === 'warn'" [class.error]="log.level === 'error'"><time>{{ log.createdAt | date:'HH:mm:ss' }}</time><b>{{ log.event }}</b><span>{{ log.message }}</span></div>
+              </div>
+            </article>
+          </div>
         </section>
       </ng-container>
 
