@@ -12,6 +12,7 @@ import psutil
 from seleniumbase import sb_cdp
 
 from base_target_adapter import BaseTargetAdapter
+from cdp_challenge_observer import ChallengeWatchdog
 from challenge_state_tracker import ChallengeStateTracker
 from cdp_fetch_bridge import NetworkAnomalyEliminator, CDPFetchBridge
 from cdp_session_recovery import (
@@ -152,6 +153,7 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         self._instruction_inputs = InstructionInputRuntime(self._sb)
         self._orchestrator = InteractionOrchestrator()
         self._watchdog = PageObservationWatchdog(self._sb, self._policy)
+        self._challenge_watchdog = ChallengeWatchdog(self._sb, interval_seconds=0.3)
         self._next_watchdog_poll = 0.0
         self._last_watchdog_state: Dict[str, Any] = {}
         self._last_auto_result: Dict[str, Any] = {
@@ -421,6 +423,7 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
 
     def goto(self, url: str) -> None:
         self._sb.goto(url)
+        self._challenge_watchdog.reset()
         ensure_live_cdp_session(self._sb, expected_url=url)
         wait_for_document_ready(self._sb)
         self._challenge_tracker.wait_for_stable_challenge()
@@ -455,6 +458,7 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
             "instructionInputsEnabled": True,
             "orchestrator": self._orchestrator.status(),
             "watchdog": self._watchdog.status(),
+            "challengeWatchdog": self._challenge_watchdog.status(),
             "policy": self._policy.status(),
             "capture": self._capture.status(),
         }
@@ -569,7 +573,23 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
 
     def poll_runtime(self) -> None:
         if not self._closed:
+            self.poll_challenge_watchdog()
             self._poll_observation_watchdog()
+
+    def poll_challenge_watchdog(self, *, allow_forced_auto: bool = True) -> Dict[str, Any]:
+        """Continuous passive challenge poll (~300 ms) driven by the owner loop.
+
+        Detection runs even when automatic visual work is deferred; the forced
+        analysis is only triggered when the flag is allowed and the challenge
+        appeared/disappeared since the previous poll.
+        """
+        state = self._challenge_watchdog.poll_if_due()
+        if allow_forced_auto and state.get("due") and (state.get("changed") or state.get("present")):
+            self._poll_observation_watchdog(force=True)
+        return state
+
+    def challenge_watchdog_state(self) -> Dict[str, Any]:
+        return self._challenge_watchdog.status()
 
     def force_captcha_poll(self) -> bool:
         """Force one observation+auto-interaction cycle regardless of the

@@ -143,6 +143,9 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
                 and deferral_age >= self.MAX_CONTROL_DEFERRAL_SECONDS
             )
             if quiet_active and not forced_after_starvation:
+                # Passive challenge detection must stay continuous even while
+                # expensive automatic work is deferred to the quiet window.
+                self.poll_challenge_watchdog(allow_forced_auto=False)
                 self._append_runtime_poll_trace("poll-skipped", now=now)
                 return
 

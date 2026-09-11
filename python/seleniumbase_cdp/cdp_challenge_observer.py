@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import html as html_module
 import re
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import mycdp
@@ -335,6 +336,74 @@ class CdpChallengeObserver:
         if tab is None or loop is None:
             return None
         return (tab, loop)
+
+
+class ChallengeWatchdog:
+    """Continuous passive challenge poll for the single browser owner loop.
+
+    The watchdog never opens its own CDP connection and never runs on a second
+    thread. It is driven by the existing owner loop (worker idle loop, monitor
+    scheduler) and therefore stays free of concurrent websocket sends.
+    """
+
+    DEFAULT_INTERVAL_SECONDS = 0.3
+
+    def __init__(
+        self,
+        seleniumbase_cdp: Any,
+        *,
+        interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+        observer: Optional[CdpChallengeObserver] = None,
+    ) -> None:
+        self._observer = observer or CdpChallengeObserver(seleniumbase_cdp)
+        self._interval_seconds = max(0.05, float(interval_seconds))
+        self._next_poll_at = 0.0
+        self._last_present = False
+        self._generation = 0
+        self._polls = 0
+        self._last_checked_at = 0.0
+
+    def reset(self) -> None:
+        """Re-arm for a fresh document (call after navigation)."""
+        self._next_poll_at = 0.0
+        self._last_present = False
+
+    def poll_if_due(self, *, force: bool = False) -> Dict[str, Any]:
+        now = time.monotonic()
+        if not force and now < self._next_poll_at:
+            return self._state(due=False, changed=False)
+        self._next_poll_at = now + self._interval_seconds
+        present = bool(self._observer.present())
+        changed = present != self._last_present
+        if changed:
+            self._generation += 1
+        self._last_present = present
+        self._polls += 1
+        self._last_checked_at = now
+        return self._state(due=True, changed=changed)
+
+    def present(self) -> bool:
+        return self._last_present
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "intervalSeconds": self._interval_seconds,
+            "present": self._last_present,
+            "generation": self._generation,
+            "polls": self._polls,
+            "lastCheckedAt": self._last_checked_at,
+            "nextPollAt": self._next_poll_at,
+        }
+
+    def _state(self, *, due: bool, changed: bool) -> Dict[str, Any]:
+        return {
+            "due": bool(due),
+            "present": self._last_present,
+            "changed": bool(changed),
+            "generation": self._generation,
+            "polls": self._polls,
+            "checkedAt": self._last_checked_at,
+        }
 
 
 def _inside(point: Tuple[float, float], window: Optional[Dict[str, float]]) -> bool:
