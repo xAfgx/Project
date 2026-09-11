@@ -1,4 +1,4 @@
-import { Task, TaskConfig, TaskLogEntry, TaskState } from "../models";
+import { Task, TaskConfig, TaskLogEntry, RuntimeLogEntry, TaskState } from "../models";
 import type { ProductMonitorEvent } from "../monitor/models";
 
 export interface ITaskExecutor {
@@ -52,8 +52,24 @@ export interface IProductMonitorEventRepository {
   deleteProductMonitorEventsByTaskId(taskId: string): Promise<void>;
 }
 
+export interface StoredRuntimeLogEntry extends RuntimeLogEntry {
+  id: number;
+}
+
+export interface RuntimeLogQuery {
+  targetId?: string;
+  accountId?: string;
+  pid?: number;
+  limit?: number;
+}
+
+export interface IRuntimeLogRepository {
+  appendRuntimeLog(entry: RuntimeLogEntry): Promise<void>;
+  findRuntimeLogs(query?: RuntimeLogQuery): Promise<StoredRuntimeLogEntry[]>;
+}
+
 export interface ITaskPersistenceRepository
-  extends ITaskRepository, ITaskLogRepository, IProductMonitorEventRepository {
+  extends ITaskRepository, ITaskLogRepository, IProductMonitorEventRepository, IRuntimeLogRepository {
   recordTaskEvent(task: Task, entry: TaskLogEntry): Promise<void>;
   close?(): Promise<void>;
 }

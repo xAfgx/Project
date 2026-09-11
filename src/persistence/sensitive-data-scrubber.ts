@@ -76,6 +76,15 @@ export function scrubLegacySensitiveData(db: Database): void {
       if (sanitizedMessage !== rawMessage) updateLog.run(sanitizedMessage, id);
     }
 
+    const runtimeLogRows = db.prepare("SELECT id, message FROM runtime_logs").all() as Record<string, unknown>[];
+    const updateRuntimeLog = db.prepare("UPDATE runtime_logs SET message = ? WHERE id = ?");
+    for (const row of runtimeLogRows) {
+      const id = asNumber(row["id"]);
+      const rawMessage = asString(row["message"]);
+      const sanitizedMessage = sanitizePersistedMessage(rawMessage);
+      if (sanitizedMessage !== rawMessage) updateRuntimeLog.run(sanitizedMessage, id);
+    }
+
     const eventRows = db.prepare("SELECT id, event_json FROM product_monitor_events").all() as Record<string, unknown>[];
     const updateEvent = db.prepare("UPDATE product_monitor_events SET event_json = ? WHERE id = ?");
     for (const row of eventRows) {

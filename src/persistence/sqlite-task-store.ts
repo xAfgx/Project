@@ -2,8 +2,8 @@ import { mkdir } from "fs/promises";
 import * as fs from "fs";
 import * as path from "path";
 import Database from "better-sqlite3";
-import { ITaskPersistenceRepository, StoredProductMonitorEvent } from "../interfaces";
-import { Task, TaskConfig, TaskLogEntry, TaskLogLevel, TaskState } from "../models";
+import { ITaskPersistenceRepository, StoredProductMonitorEvent, StoredRuntimeLogEntry, RuntimeLogQuery } from "../interfaces";
+import { Task, TaskConfig, TaskLogEntry, TaskLogLevel, TaskState, RuntimeLogEntry } from "../models";
 import type { ProductMonitorEvent, ProductObservation } from "../monitor/models";
 import {
   sanitizePersistedMessage,
@@ -11,7 +11,7 @@ import {
   scrubLegacySensitiveData
 } from "./sensitive-data-scrubber";
 
-const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_VERSION = 2;
 const BUSY_TIMEOUT_MS = 5000;
 
 function serializeConfig(config: TaskConfig): string {
@@ -51,6 +51,19 @@ function rowToLog(row: Record<string, unknown>): TaskLogEntry {
     event: asString(row["event"]),
     state: row["state"] == null ? undefined : asString(row["state"]) as TaskState,
     level: asString(row["level"]) as TaskLogLevel,
+    message: asString(row["message"]),
+    createdAt: new Date(asString(row["created_at"]))
+  };
+}
+
+function rowToRuntimeLog(row: Record<string, unknown>): StoredRuntimeLogEntry {
+  return {
+    id: asNumber(row["id"]),
+    pid: asNumber(row["pid"]),
+    targetId: asString(row["target_id"]),
+    accountId: row["account_id"] == null ? undefined : asString(row["account_id"]),
+    level: asString(row["level"]) as TaskLogLevel,
+    event: asString(row["event"]),
     message: asString(row["message"]),
     createdAt: new Date(asString(row["created_at"]))
   };
@@ -175,6 +188,28 @@ export class SqliteTaskStore implements ITaskPersistenceRepository {
     this.db.prepare("DELETE FROM task_logs WHERE task_id = ?").run(taskId);
   }
 
+  async appendRuntimeLog(entry: RuntimeLogEntry): Promise<void> {
+    this.insertRuntimeLog(entry);
+  }
+
+  async findRuntimeLogs(query: RuntimeLogQuery = {}): Promise<StoredRuntimeLogEntry[]> {
+    const limit = Math.min(1000, Math.max(1, Math.floor(query.limit ?? 200)));
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (query.targetId) { clauses.push("target_id = ?"); params.push(query.targetId); }
+    if (query.accountId) { clauses.push("account_id = ?"); params.push(query.accountId); }
+    if (typeof query.pid === "number") { clauses.push("pid = ?"); params.push(Math.trunc(query.pid)); }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db.prepare(`
+      SELECT id, pid, target_id, account_id, level, event, message, created_at
+      FROM runtime_logs
+      ${where}
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(...params, limit) as Record<string, unknown>[];
+    return rows.map(rowToRuntimeLog).reverse();
+  }
+
   async recordProductMonitorEvent(taskId: string, event: ProductMonitorEvent): Promise<void> {
     this.db.prepare(`
       INSERT INTO product_monitor_events (task_id, product_key, change_type, event_json, observed_at)
@@ -275,15 +310,39 @@ export class SqliteTaskStore implements ITaskPersistenceRepository {
       migration();
     }
 
+    if (version < 2) {
+      const migration = this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS runtime_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pid INTEGER NOT NULL,
+            target_id TEXT NOT NULL,
+            account_id TEXT,
+            level TEXT NOT NULL DEFAULT 'info',
+            event TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_runtime_logs_target_account_id
+            ON runtime_logs(target_id, account_id, id);
+        `);
+        this.db.prepare(
+          "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)"
+        ).run(2, new Date().toISOString());
+      });
+      migration();
+    }
+
     this.assertSchema();
     scrubLegacySensitiveData(this.db);
   }
 
   private assertSchema(): void {
-    const requiredTables = ["schema_migrations", "tasks", "task_logs", "product_monitor_events"];
+    const requiredTables = ["schema_migrations", "tasks", "task_logs", "product_monitor_events", "runtime_logs"];
     const rows = this.db.prepare(`
       SELECT name FROM sqlite_master
-      WHERE type = 'table' AND name IN (?, ?, ?, ?)
+      WHERE type = 'table' AND name IN (?, ?, ?, ?, ?)
     `).all(...requiredTables) as Array<Record<string, unknown>>;
     const present = new Set(rows.map(row => asString(row["name"])));
     const missing = requiredTables.filter(name => !present.has(name));
@@ -325,6 +384,21 @@ export class SqliteTaskStore implements ITaskPersistenceRepository {
       entry.event,
       entry.state ?? null,
       entry.level,
+      sanitizePersistedMessage(entry.message),
+      entry.createdAt.toISOString()
+    );
+  }
+
+  private insertRuntimeLog(entry: RuntimeLogEntry): void {
+    this.db.prepare(`
+      INSERT INTO runtime_logs (pid, target_id, account_id, level, event, message, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      Math.trunc(entry.pid),
+      entry.targetId,
+      entry.accountId ?? null,
+      entry.level ?? "info",
+      entry.event,
       sanitizePersistedMessage(entry.message),
       entry.createdAt.toISOString()
     );

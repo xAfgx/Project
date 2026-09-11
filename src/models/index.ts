@@ -46,3 +46,14 @@ export interface TaskLogEntry {
   message: string;
   createdAt: Date;
 }
+
+export interface RuntimeLogEntry {
+  id?: number;
+  pid: number;
+  targetId: string;
+  accountId?: string;
+  level?: TaskLogLevel;
+  event: string;
+  message: string;
+  createdAt: Date;
+}
