@@ -9,7 +9,7 @@ on:
 jobs:
   hardcrash-smoke:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,23 +29,26 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
 
-      - name: Run real Node to Python to Chrome parent-crash smoke
+      - name: Run five real Node to Python to Chrome parent-crash smokes
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $profile = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-profile'
-          New-Item -ItemType Directory -Force -Path $profile | Out-Null
-          $env:ARES_SMOKE_PROFILE = $profile
+          $sessionCount = 5
+          $root = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-multi'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
 
           @'
           const { spawn } = require('child_process');
           const fs = require('fs');
           const path = require('path');
 
+          const slot = String(process.argv[2] || '0');
+          const profileDir = String(process.argv[3] || '');
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
-          const profileDir = process.env.ARES_SMOKE_PROFILE;
+          const prefix = `session-${slot}`;
+
           const child = spawn(
             pythonExe,
             ['-u', 'python/seleniumbase_cdp/task_browser_worker.py'],
@@ -56,14 +59,14 @@ jobs:
             }
           );
 
-          fs.writeFileSync('python.pid', String(child.pid));
-          child.stdout.pipe(fs.createWriteStream('python.stdout.log', { flags: 'a' }));
-          child.stderr.pipe(fs.createWriteStream('python.stderr.log', { flags: 'a' }));
+          fs.writeFileSync(`${prefix}.python.pid`, String(child.pid));
+          child.stdout.pipe(fs.createWriteStream(`${prefix}.python.stdout.log`, { flags: 'a' }));
+          child.stderr.pipe(fs.createWriteStream(`${prefix}.python.stderr.log`, { flags: 'a' }));
 
           child.stdin.write(JSON.stringify({
             type: 'start',
-            requestId: 'hardcrash-smoke-start',
-            taskId: 'hardcrash-smoke-task',
+            requestId: `hardcrash-smoke-start-${slot}`,
+            taskId: `hardcrash-smoke-task-${slot}`,
             profileDir,
             headless: true,
             browserArgs: []
@@ -72,87 +75,150 @@ jobs:
           setInterval(() => {}, 1000);
           '@ | Set-Content -Path crash-parent.js -Encoding UTF8
 
-          $parent = Start-Process node -ArgumentList 'crash-parent.js' -PassThru -RedirectStandardOutput 'node.stdout.log' -RedirectStandardError 'node.stderr.log'
-          Write-Host "Node parent PID: $($parent.Id)"
+          $sessions = @()
+          for ($i = 1; $i -le $sessionCount; $i++) {
+            $profile = Join-Path $root "profile-$i"
+            New-Item -ItemType Directory -Force -Path $profile | Out-Null
+            $parent = Start-Process node -ArgumentList @('crash-parent.js', "$i", $profile) -PassThru -RedirectStandardOutput "session-$i.node.stdout.log" -RedirectStandardError "session-$i.node.stderr.log"
+            $sessions += [pscustomobject]@{
+              Slot = $i
+              Profile = $profile
+              Parent = $parent
+              PythonPid = $null
+              ChromePid = $null
+            }
+            Write-Host "SESSION $i Node parent PID=$($parent.Id) profile=$profile"
+          }
 
-          $deadline = (Get-Date).AddMinutes(4)
-          $readyLine = $null
+          $deadline = (Get-Date).AddMinutes(5)
           while ((Get-Date) -lt $deadline) {
-            if (Test-Path 'python.stdout.log') {
-              $readyLine = Get-Content 'python.stdout.log' -ErrorAction SilentlyContinue |
-                Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
-                Select-Object -Last 1
-              if ($readyLine) { break }
+            $readyCount = 0
+            foreach ($session in $sessions) {
+              if ($session.PythonPid -and $session.ChromePid) {
+                $readyCount++
+                continue
+              }
+
+              $pidFile = "session-$($session.Slot).python.pid"
+              $stdoutFile = "session-$($session.Slot).python.stdout.log"
+              if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
+                $readyLine = Get-Content $stdoutFile -ErrorAction SilentlyContinue |
+                  Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
+                  Select-Object -Last 1
+                if ($readyLine) {
+                  $session.PythonPid = [int](Get-Content $pidFile)
+                  $jsonText = $readyLine -replace '^ARES_SB_TASK\s*', ''
+                  $ready = $jsonText | ConvertFrom-Json
+                  $session.ChromePid = [int]$ready.pid
+                  Write-Host "SESSION $($session.Slot) READY python=$($session.PythonPid) chrome=$($session.ChromePid)"
+                  $readyCount++
+                }
+              }
+
+              if ($session.Parent.HasExited -and -not $session.ChromePid) {
+                throw "SESSION $($session.Slot) Node parent exited before Python worker became ready. exit=$($session.Parent.ExitCode)"
+              }
             }
-            if ($parent.HasExited) {
-              throw "Node parent exited before Python worker became ready. node exit=$($parent.ExitCode)"
-            }
+
+            if ($readyCount -eq $sessionCount) { break }
             Start-Sleep -Milliseconds 500
           }
 
-          if (-not $readyLine) {
-            Write-Host '--- python stdout ---'
-            if (Test-Path 'python.stdout.log') { Get-Content 'python.stdout.log' }
-            Write-Host '--- python stderr ---'
-            if (Test-Path 'python.stderr.log') { Get-Content 'python.stderr.log' }
-            throw 'SeleniumBase worker did not become ready within 4 minutes.'
+          $notReady = @($sessions | Where-Object { -not $_.PythonPid -or -not $_.ChromePid })
+          if ($notReady.Count -gt 0) {
+            foreach ($session in $notReady) {
+              Write-Host "SESSION $($session.Slot) NOT READY"
+              $stdoutFile = "session-$($session.Slot).python.stdout.log"
+              $stderrFile = "session-$($session.Slot).python.stderr.log"
+              if (Test-Path $stdoutFile) { Get-Content $stdoutFile }
+              if (Test-Path $stderrFile) { Get-Content $stderrFile }
+            }
+            throw "$($notReady.Count) of $sessionCount SeleniumBase workers did not become ready."
           }
 
-          $pythonPid = [int](Get-Content 'python.pid')
-          $jsonText = $readyLine -replace '^ARES_SB_TASK\s*', ''
-          $ready = $jsonText | ConvertFrom-Json
-          $chromePid = [int]$ready.pid
-
-          Write-Host "Python PID: $pythonPid"
-          Write-Host "Chrome PID reported by ARES worker: $chromePid"
-          if (-not (Get-Process -Id $pythonPid -ErrorAction SilentlyContinue)) { throw 'Python worker was not alive before parent crash.' }
-          if (-not (Get-Process -Id $chromePid -ErrorAction SilentlyContinue)) { throw 'Chrome was not alive before parent crash.' }
-
-          Write-Host "Hard-killing only Node parent PID $($parent.Id) ..."
-          Stop-Process -Id $parent.Id -Force
-          Start-Sleep -Seconds 10
-
-          $pythonAlive = $null -ne (Get-Process -Id $pythonPid -ErrorAction SilentlyContinue)
-          $reportedChromeAlive = $null -ne (Get-Process -Id $chromePid -ErrorAction SilentlyContinue)
-          $profileChromes = @(
-            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-              Where-Object {
-                $_.Name -match '^(chrome|chromium).*\.exe$' -and
-                $_.CommandLine -and
-                $_.CommandLine.Contains($profile)
-              }
-          )
-
-          Write-Host "RESULT pythonAliveAfter10s=$pythonAlive"
-          Write-Host "RESULT reportedChromeAliveAfter10s=$reportedChromeAlive"
-          Write-Host "RESULT profileChromeCountAfter10s=$($profileChromes.Count)"
-          foreach ($proc in $profileChromes) {
-            Write-Host "Remaining profile Chrome PID=$($proc.ProcessId) PPID=$($proc.ParentProcessId)"
+          foreach ($session in $sessions) {
+            if (-not (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)) {
+              throw "SESSION $($session.Slot) Python worker was not alive before parent crash."
+            }
+            if (-not (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)) {
+              throw "SESSION $($session.Slot) Chrome was not alive before parent crash."
+            }
           }
 
-          # Always clean up the isolated test processes before reporting failure.
-          if ($pythonAlive) {
-            Stop-Process -Id $pythonPid -Force -ErrorAction SilentlyContinue
-          }
-          foreach ($proc in $profileChromes) {
-            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+          Write-Host "Hard-killing all $sessionCount Node parents..."
+          foreach ($session in $sessions) {
+            Stop-Process -Id $session.Parent.Id -Force -ErrorAction Stop
           }
 
-          if ($pythonAlive -or $reportedChromeAlive -or $profileChromes.Count -gt 0) {
-            Write-Error 'ZOMBIE_REPRODUCED: Python and/or Chrome survived the hard death of the Node parent.'
+          function Get-SessionState($session, $label) {
+            $pythonAlive = $null -ne (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)
+            $reportedChromeAlive = $null -ne (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)
+            $profileChromes = @(
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                  $_.CommandLine -and
+                  $_.CommandLine.Contains($session.Profile)
+                }
+            )
+            Write-Host "RESULT $label session=$($session.Slot) pythonAlive=$pythonAlive reportedChromeAlive=$reportedChromeAlive profileChromeCount=$($profileChromes.Count)"
+            foreach ($proc in $profileChromes) {
+              Write-Host "  session=$($session.Slot) Chrome PID=$($proc.ProcessId) PPID=$($proc.ParentProcessId)"
+            }
+            return [pscustomobject]@{
+              Slot = $session.Slot
+              PythonAlive = $pythonAlive
+              ReportedChromeAlive = $reportedChromeAlive
+              ProfileChromes = $profileChromes
+            }
+          }
+
+          Start-Sleep -Seconds 5
+          $states5 = @()
+          foreach ($session in $sessions) {
+            $states5 += Get-SessionState $session 'after5s'
+          }
+
+          Start-Sleep -Seconds 15
+          $states20 = @()
+          foreach ($session in $sessions) {
+            $states20 += Get-SessionState $session 'after20s'
+          }
+
+          $zombieSessions = @($states20 | Where-Object {
+            $_.PythonAlive -or $_.ReportedChromeAlive -or $_.ProfileChromes.Count -gt 0
+          })
+
+          Write-Host "SUMMARY sessions=$sessionCount zombiesAfter20s=$($zombieSessions.Count)"
+          foreach ($state in $zombieSessions) {
+            Write-Host "SUMMARY zombieSession=$($state.Slot) python=$($state.PythonAlive) chrome=$($state.ReportedChromeAlive) chromeCount=$($state.ProfileChromes.Count)"
+          }
+
+          # Always clean up all isolated test processes before reporting the result.
+          foreach ($session in $sessions) {
+            Stop-Process -Id $session.PythonPid -Force -ErrorAction SilentlyContinue
+          }
+          foreach ($state in $states20) {
+            foreach ($proc in $state.ProfileChromes) {
+              Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+          if ($zombieSessions.Count -gt 0) {
+            Write-Error "ZOMBIE_REPRODUCED_MULTI: $($zombieSessions.Count) of $sessionCount independent Chrome sessions still had Python and/or profile-owned Chrome after 20 seconds."
             exit 42
           }
 
-          Write-Host 'CLEAN_EXIT: Python and Chrome both disappeared after Node parent death.'
+          Write-Host "CLEAN_EXIT_MULTI: all $sessionCount independent sessions disappeared after Node parent death."
 
       - name: Upload smoke logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-node-hardcrash-smoke-logs
+          name: windows-node-hardcrash-multi-smoke-logs
           path: |
-            python.stdout.log
-            python.stderr.log
-            node.stdout.log
-            node.stderr.log
+            session-*.python.stdout.log
+            session-*.python.stderr.log
+            session-*.node.stdout.log
+            session-*.node.stderr.log
           if-no-files-found: ignore
