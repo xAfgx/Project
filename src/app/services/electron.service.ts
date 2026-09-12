@@ -84,15 +84,21 @@ export class ElectronService {
     if (this.api?.getSeleniumBaseVisionStatus) return this.api.getSeleniumBaseVisionStatus();
     return Promise.resolve({
       success: true,
-      status: { ready: true, dependenciesReady: true, model: "preview", device: "preview" }
+      status: {
+        ready: false,
+        dependenciesReady: false,
+        model: "SigLIP2",
+        device: "local",
+        error: "SigLIP2 kann nur in der Electron-App manuell gestartet werden."
+      }
     });
   }
 
   prepareSeleniumBaseVision(): Promise<any> {
     if (this.api?.prepareSeleniumBaseVision) return this.api.prepareSeleniumBaseVision();
     return Promise.resolve({
-      success: true,
-      status: { ready: true, dependenciesReady: true, model: "preview", device: "preview" }
+      success: false,
+      error: "SigLIP2 lokal laden ist im Browser-Preview nicht verfügbar. Starte die Electron-App, damit der echte Vision-Prozess gestartet wird."
     });
   }
 

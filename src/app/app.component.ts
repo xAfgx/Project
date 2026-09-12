@@ -1,13 +1,12 @@
-import { AfterViewInit, Component, OnDestroy, OnInit } from "@angular/core";
-import { tsParticles } from "tsparticles-engine";
-import type { Container, ISourceOptions } from "tsparticles-engine";
-import { loadSlim } from "tsparticles-slim";
+import { Component, OnDestroy, OnInit } from "@angular/core";
 import { ElectronService } from "./services/electron.service";
+import { ProfileBrowserService, type ProfileBrowserStatusView, type SeleniumBaseProfileBrowserStatusView } from "./services/profile-browser.service";
 import { TaskState } from "../models";
 import { COMMERCE_PLATFORMS, CommercePlatform } from "../commerce/platforms";
 import type { CheckoutPaymentSession, PaymentMethod } from "../payments/models";
-import type { AresProxy, ProxySelection } from "../proxies/models";
+import type { AresProxy, ProxyProtocol, ProxySelection } from "../proxies/models";
 import type { AresProfile } from "../profiles/models";
+import { clearProfileBrowserUserAgent } from "../profiles/profile-browser-reset";
 import {
   isCompleteCheckoutAddress,
   toPersistedAresProfile,
@@ -15,13 +14,15 @@ import {
   type ProfileV2Draft
 } from "../profiles/profile-v2";
 
-type AppTab = "dashboard" | "modules" | "tasks" | "profiles" | "proxies" | "shops" | "captchas";
+type AppTab = "dashboard" | "modules" | "tasks" | "monitor" | "profiles" | "proxies" | "shops" | "captchas" | "settings";
 type ProfileTab = "identity" | "address" | "browser" | "payment";
 type TaskCreationMode = "monitor-only" | "auto-checkout";
 type MonitorStrategyMode = "product-monitor" | "early-gate";
-type ModuleModeId = "direct" | "early-gate";
+type ModuleModeId = "monitor" | "direct" | "early-gate";
+type SettingsSection = "general" | "appearance" | "runtime" | "browser" | "monitor" | "providers" | "diagnostics" | "about";
 type ProfileView = ProfileV2Draft;
 type FlowStepKey = "monitoring" | "gate-detected" | "waiting-queue" | "released" | "post-queue-discovery" | "product-found" | "cart" | "checkout";
+type CaptchaProviderCapability = "token" | "classify";
 
 interface ModuleModeView {
   id: ModuleModeId;
@@ -68,6 +69,22 @@ interface TaskLogView {
   createdAt: string | Date;
 }
 
+interface ProxyImportPreview {
+  line: string;
+  proxy?: AresProxy;
+  valid: boolean;
+  duplicate: boolean;
+  error?: string;
+}
+
+interface VisionRuntimeStatus {
+  ready?: boolean;
+  dependenciesReady?: boolean;
+  model?: string;
+  device?: string;
+  error?: string;
+}
+
 interface SystemNodeStatus {
   executable: string;
   version?: string;
@@ -104,12 +121,21 @@ interface SystemStatus {
   browserWorkerPool?: unknown;
 }
 
+interface UiSettings {
+  confirmDestructive: boolean;
+  defaultStartTab: AppTab;
+  reduceMotion: boolean;
+  backgroundEffects: boolean;
+  compactDensity: boolean;
+  compactSidebar: boolean;
+}
+
 @Component({
   selector: "app-root",
   templateUrl: "./app.component.html",
   styleUrls: ["./app.component.scss"]
 })
-export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
+export class AppComponent implements OnInit, OnDestroy {
   activeTab: AppTab = "dashboard";
   profileTab: ProfileTab = "identity";
 
@@ -156,7 +182,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   // Module hub (retailer modules). Selecting a module scopes the task builder
   // to that retailer and offers its supported task modes.
   selectedModuleId = "";
-  moduleMode: ModuleModeId = "direct";
+  moduleMode: ModuleModeId = "monitor";
   readonly modules: ModuleView[] = [
     {
       id: "pokemon-center",
@@ -165,6 +191,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       accent: "#e60012",
       platform: "pokemon-center",
       modes: [
+        { id: "monitor", label: "Nur Monitoring", hint: "Produkt überwachen und melden, ohne Checkout-Profil und ohne Kaufpfad." },
         { id: "direct", label: "Direkt zum Checkout", hint: "Produkt überwachen und beim Verfügbarwerden sofort in den Checkout – ohne Queue-Monitor." },
         { id: "early-gate", label: "Erst Queue, dann Checkout", hint: "Früh in die Warteschlange, Position halten, bei Release automatisch Checkout starten." }
       ]
@@ -176,6 +203,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
       accent: "#95bf47",
       platform: "shopify",
       modes: [
+        { id: "monitor", label: "Nur Monitoring", hint: "Shopify-Produkte überwachen und Signale sammeln, ohne Checkout zu starten." },
         { id: "direct", label: "Direct Task", hint: "Ein Browser, direkter Checkout-Flow" }
       ]
     }
@@ -185,16 +213,33 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     id: string;
     name: string;
     envKey: string;
-    capabilities: string[];
+    capabilities: CaptchaProviderCapability[];
     enabled: boolean;
     configured: boolean;
     maskedKey: string;
     updatedAt?: string;
   }> = [];
+  readonly fallbackCaptchaProviders: Array<{
+    id: string;
+    name: string;
+    envKey: string;
+    capabilities: CaptchaProviderCapability[];
+    enabled: boolean;
+    configured: boolean;
+    maskedKey: string;
+  }> = [
+    { id: "capmonster", name: "CapMonster Cloud", envKey: "CAPMONSTER_API_KEY", capabilities: ["token"], enabled: false, configured: false, maskedKey: "" },
+    { id: "twocaptcha", name: "2Captcha", envKey: "TWOCAPTCHA_API_KEY", capabilities: ["token"], enabled: false, configured: false, maskedKey: "" },
+    { id: "capsolver", name: "CapSolver", envKey: "CAPSOLVER_API_KEY", capabilities: ["token"], enabled: false, configured: false, maskedKey: "" },
+    { id: "anticaptcha", name: "Anti-Captcha", envKey: "ANTICAPTCHA_API_KEY", capabilities: ["token"], enabled: false, configured: false, maskedKey: "" },
+    { id: "nocaptchaai", name: "NoCaptchaAI", envKey: "NOCAPTCHA_API_KEY", capabilities: ["classify"], enabled: false, configured: false, maskedKey: "" }
+  ];
   captchaMode: "siglip" | "siglip-api" | "api" = "siglip-api";
   readonly captchaKeyDrafts: Record<string, string> = {};
   readonly captchaStatus: Record<string, string> = {};
+  captchaModeNotice = "";
   captchaBusy = false;
+  captchaProviderApiAvailable = true;
 
   taskName = "";
   searchTerm = "";  earlyGateProductName = "";
@@ -222,10 +267,43 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   testingAllProxies = false;
   readonly testingProxyIds = new Set<string>();
+  proxyImportDraft = "";
+  proxyImportPreview: ProxyImportPreview[] = [];
+  proxyImportSaving = false;
 
   purchaseChanging = false;
   bulkStarting = false;
   bulkStopping = false;
+
+  visionStatus?: VisionRuntimeStatus;
+  visionBusy = false;
+  visionStatusText = "Noch nicht geprüft.";
+
+  readonly profileBrowserStatuses: Record<string, ProfileBrowserStatusView> = {};
+  readonly seleniumBaseBrowserStatuses: Record<string, SeleniumBaseProfileBrowserStatusView> = {};
+  readonly profileBrowserBusyIds = new Set<string>();
+  readonly seleniumBaseBrowserBusyIds = new Set<string>();
+  readonly settingsStartUrls: Record<string, string> = {};
+  settingsMessage = "";
+  settingsSection: SettingsSection = "general";
+  readonly settingsSections: Array<{ id: SettingsSection; label: string; note: string }> = [
+    { id: "general", label: "General", note: "Purchase guard & Start" },
+    { id: "appearance", label: "Appearance", note: "Density & motion" },
+    { id: "runtime", label: "Runtime", note: "Worker & storage" },
+    { id: "browser", label: "Browser & Vision", note: "Manual browser actions" },
+    { id: "monitor", label: "Monitor & Network", note: "Pipeline status" },
+    { id: "providers", label: "Providers", note: "Captcha overview" },
+    { id: "diagnostics", label: "Diagnostics", note: "Snapshot export" },
+    { id: "about", label: "About", note: "Build facts" }
+  ];
+  uiSettings: UiSettings = {
+    confirmDestructive: true,
+    defaultStartTab: "dashboard",
+    reduceMotion: false,
+    backgroundEffects: false,
+    compactDensity: true,
+    compactSidebar: false
+  };
 
   error = "";
   info = "";
@@ -233,76 +311,22 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   private unsubscribeStatus?: () => void;
   private taskUpdateTimer?: ReturnType<typeof setTimeout>;
 
-  /**
-   * tsParticles (MIT, official Angular binding) renders the cosmic background.
-   * A single canvas keeps the cost minimal; the diagonal drift reads as a
-   * meteor shower without any per-frame layout work.
-   */
-  readonly particlesId = "ares-cosmic-particles";
-  private particlesReady = false;
-  private meteorContainer?: Container;
-  readonly meteorOptions: ISourceOptions = {
-    fullScreen: { enable: false },
-    fpsLimit: 60,
-    detectRetina: false,
-    pauseOnBlur: true,
-    pauseOnOutsideViewport: true,
-    particles: {
-      number: { value: 26 },
-      color: { value: ["#6f9dff", "#4a76ff", "#9fc0ff", "#7fb2ff", "#5b8cff"] },
-      shape: { type: "circle" },
-      opacity: { value: { min: 0.75, max: 1 } },
-      size: { value: { min: 1.6, max: 3.0 } },
-      move: {
-        enable: true,
-        speed: { min: 0.8, max: 2.2 },
-        direction: "bottom-left",
-        straight: true,
-        outModes: { default: "out" }
-      }
-    }
-  };
-
-  constructor(private readonly electron: ElectronService) {}
-
-  private async ensureParticles(): Promise<void> {
-    if (this.particlesReady) return;
-    this.particlesReady = true;
-    try {
-      await loadSlim(tsParticles);
-    } catch {
-      this.particlesReady = false;
-    }
-  }
-
-  async ngAfterViewInit(): Promise<void> {
-    await this.ensureParticles();
-    await this.mountParticles();
-  }
-
-  private async mountParticles(): Promise<void> {
-    if (this.meteorContainer) return;
-    if (!document.getElementById(`${this.particlesId}-meteors`)) return;
-    await this.ensureParticles();
-    try {
-      this.meteorContainer = await tsParticles.load({ id: `${this.particlesId}-meteors`, options: this.meteorOptions });
-    } catch {
-      // Decorative only: never let the particle layer break the app.
-    }
-  }
-
-  private syncParticles(): void {
-    setTimeout(() => void this.mountParticles(), 0);
-  }
+  constructor(
+    private readonly electron: ElectronService,
+    private readonly profileBrowser: ProfileBrowserService
+  ) {}
 
   async ngOnInit(): Promise<void> {
+    this.loadUiSettings();
+    this.activeTab = this.uiSettings.defaultStartTab;
     await Promise.all([
       this.loadShops(),
       this.loadProfiles(),
       this.loadProxies(),
       this.loadTasks(),
       this.loadSystemStatus(),
-      this.loadCaptchaProviders()
+      this.loadCaptchaProviders(),
+      this.loadVisionStatus()
     ]);
 
     this.syncProfileDefaults();
@@ -314,7 +338,6 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   ngOnDestroy(): void {
     this.unsubscribeStatus?.();
     if (this.taskUpdateTimer) clearTimeout(this.taskUpdateTimer);
-    this.meteorContainer?.destroy();
   }
 
   private scheduleTaskViewRefresh(): void {
@@ -334,7 +357,11 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     this.activeTab = tab;
     this.error = "";
     this.info = "";
-    this.syncParticles();
+    if (tab === "modules") this.selectedModuleId = "";
+    if (tab === "settings") void this.refreshProfileBrowserStatuses();
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => window.scrollTo({ top: 0, left: 0, behavior: "auto" }));
+    }
   }
 
   setProfileTab(tab: ProfileTab): void {
@@ -350,13 +377,15 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     return this.modules.find(module => module.id === this.selectedModuleId);
   }
 
+  get highlightedModule(): ModuleView | undefined {
+    return this.selectedModule ?? this.modules[0];
+  }
+
   /** Tasks that belong to the currently opened module (by shop platform). */
   get moduleTasks(): TaskView[] {
     const module = this.selectedModule;
     if (!module) return [];
-    const shopIds = new Set(this.shops.filter(shop => shop.platform === module.platform).map(shop => shop.id));
-    if (!shopIds.size) return this.tasks;
-    return this.tasks.filter(task => shopIds.has(String(task.config.shopId ?? "")));
+    return this.getModuleTasks(module);
   }
 
   /** Shops offered inside the task builder: scoped to the module when open. */
@@ -369,12 +398,15 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   openModule(moduleId: string): void {
     const module = this.modules.find(item => item.id === moduleId);
     if (!module) return;
+    const previousModuleId = this.selectedModuleId;
     this.selectedModuleId = module.id;
     this.error = "";
     this.info = "";
     this.activeTab = "modules";
-    this.syncParticles();
-    this.selectModuleMode(module.modes[0]?.id ?? "direct");
+    this.selectModuleMode(module.modes[0]?.id ?? "monitor");
+    if (!this.taskName.trim() || (previousModuleId !== module.id && this.taskName.endsWith(" Monitor"))) {
+      this.taskName = `${module.name} Monitor`;
+    }
     const shop = this.shops.find(item => item.platform === module.platform);
     if (shop) {
       this.selectedShopId = shop.id;
@@ -386,8 +418,318 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     this.selectedModuleId = "";
   }
 
+  selectSettingsSection(section: SettingsSection): void {
+    this.settingsSection = section;
+    if (section === "browser") void this.refreshProfileBrowserStatuses();
+    if (section === "providers") void this.loadCaptchaProviders();
+    if (section === "runtime" || section === "monitor" || section === "diagnostics") void this.loadSystemStatus();
+  }
+
+  toggleUiSetting(key: "confirmDestructive" | "reduceMotion" | "backgroundEffects" | "compactDensity" | "compactSidebar"): void {
+    this.uiSettings = { ...this.uiSettings, [key]: !this.uiSettings[key] };
+    this.persistUiSettings();
+  }
+
+  setDefaultStartTab(value: string): void {
+    const allowed: AppTab[] = ["dashboard", "modules", "tasks", "monitor", "profiles", "proxies", "shops", "captchas", "settings"];
+    if (!allowed.includes(value as AppTab)) return;
+    this.uiSettings = { ...this.uiSettings, defaultStartTab: value as AppTab };
+    this.persistUiSettings();
+  }
+
+  async copyDiagnostics(): Promise<void> {
+    const snapshot = {
+      createdAt: new Date().toISOString(),
+      tasks: {
+        total: this.tasks.length,
+        running: this.runningTaskCount,
+        queued: this.queuedTaskCount,
+        stopped: this.stoppedTaskCount
+      },
+      modules: {
+        total: this.modules.length,
+        ready: this.readyModuleCount,
+        partial: this.partialModuleCount,
+        planned: this.plannedModuleCount
+      },
+      system: this.system,
+      captcha: {
+        mode: this.captchaMode,
+        providers: this.captchaProviders.map(provider => ({
+          id: provider.id,
+          name: provider.name,
+          enabled: provider.enabled,
+          configured: provider.configured,
+          capabilities: provider.capabilities
+        }))
+      },
+      browserSessions: this.profiles.map(profile => {
+        const id = String(profile.id ?? "");
+        return {
+          id,
+          name: profile.name || id,
+          profileBrowser: this.getProfileBrowserStatusText(id),
+          seleniumBase: this.getSeleniumBaseBrowserStatusText(id)
+        };
+      })
+    };
+    const text = JSON.stringify(snapshot, null, 2);
+    try {
+      await navigator.clipboard?.writeText(text);
+      this.settingsMessage = "Diagnostics snapshot kopiert.";
+    } catch {
+      this.settingsMessage = text;
+    }
+  }
+
+  private loadUiSettings(): void {
+    if (typeof localStorage === "undefined") return;
+    try {
+      const raw = localStorage.getItem("ares.uiSettings");
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<UiSettings>;
+      this.uiSettings = { ...this.uiSettings, ...parsed };
+    } catch {
+      // Ignore invalid local UI preferences; backend/runtime remains untouched.
+    }
+  }
+
+  private persistUiSettings(): void {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem("ares.uiSettings", JSON.stringify(this.uiSettings));
+  }
+
+  getModuleKey(module: ModuleView): string {
+    return module.id;
+  }
+
+  getModuleCapabilities(module: ModuleView): string[] {
+    const capabilities: string[] = [];
+    if (module.modes.some(mode => mode.id === "direct")) capabilities.push("Direct Checkout");
+    if (this.system.commerceMonitorReady) capabilities.push("Monitor");
+    if (module.modes.some(mode => mode.id === "early-gate")) capabilities.push("Early Gate");
+    return capabilities;
+  }
+
+  getModuleStatusLevel(module: ModuleView): "ready" | "partial" | "planned" {
+    const checks: boolean[] = [];
+    if (module.modes.some(mode => mode.id === "direct")) {
+      checks.push(this.executorPlatforms.includes(module.platform));
+    }
+    if (this.system.commerceMonitorReady) {
+      checks.push(true);
+    }
+    if (module.modes.some(mode => mode.id === "early-gate")) {
+      checks.push(this.system.earlyGateReady === true);
+    }
+    if (!checks.length || checks.every(value => !value)) return "planned";
+    return checks.every(Boolean) ? "ready" : "partial";
+  }
+
+  getModuleStatusLabel(module: ModuleView): string {
+    const level = this.getModuleStatusLevel(module);
+    if (level === "ready") return "Ready";
+    if (level === "partial") return "Partial";
+    return "Planned";
+  }
+
+  getModuleStatusNote(module: ModuleView): string {
+    const level = this.getModuleStatusLevel(module);
+    if (level === "ready") return "All exposed capabilities ready";
+    if (level === "partial") return "Some capabilities not exposed";
+    return "Not exposed";
+  }
+
+  getModuleShopCount(module: ModuleView): number {
+    return this.shops.filter(shop => shop.platform === module.platform).length;
+  }
+
+  getModuleTasks(module: ModuleView): TaskView[] {
+    const shopIds = new Set(this.shops.filter(shop => shop.platform === module.platform).map(shop => shop.id));
+    return this.tasks.filter(task => {
+      const shopId = String(task.config.shopId ?? "");
+      return shopIds.has(shopId) || shopId === module.id || shopId === module.platform;
+    });
+  }
+
+  getModuleActiveTaskCount(module: ModuleView): number {
+    return this.getModuleTasks(module).filter(task => ![TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED].includes(task.state)).length;
+  }
+
+  getModuleRunningTaskCount(module: ModuleView): number {
+    return this.getModuleTasks(module).filter(task => this.isPausable(task)).length;
+  }
+
+  getModuleLastUpdate(module: ModuleView): string {
+    const timestamps = this.getModuleTasks(module)
+      .flatMap(task => this.getTaskRuntimeTimestamps(task))
+      .map(value => new Date(value).getTime())
+      .filter(value => Number.isFinite(value));
+    if (!timestamps.length) return "—";
+    return new Date(Math.max(...timestamps)).toLocaleString("de-DE");
+  }
+
+  private getTaskRuntimeTimestamps(task: TaskView): string[] {
+    const data = task.config.data ?? {};
+    const values: unknown[] = [];
+    const records = [
+      data["monitorPipeline"],
+      data["queueStatus"],
+      data["earlyGateRuntime"],
+      data["autoCheckoutRuntime"],
+      data["postQueueDiscovery"]
+    ];
+    for (const record of records) {
+      if (!record || typeof record !== "object") continue;
+      const source = record as Record<string, unknown>;
+      values.push(source["updatedAt"], source["checkedAt"], source["detectedAt"], source["startedAt"], source["triggeredAt"]);
+    }
+    return values.map(value => String(value ?? "")).filter(Boolean);
+  }
+
+  async refreshProfileBrowserStatuses(): Promise<void> {
+    await Promise.all(this.profiles.map(async profile => {
+      const profileId = String(profile.id ?? "").trim();
+      if (!profileId) return;
+      const [profileResult, seleniumBaseResult] = await Promise.all([
+        this.profileBrowser.getStatus(profileId).catch(() => undefined),
+        this.profileBrowser.getSeleniumBaseStatus(profileId).catch(() => undefined)
+      ]);
+      if (profileResult?.success && profileResult.status) this.profileBrowserStatuses[profileId] = profileResult.status;
+      if (seleniumBaseResult?.success && seleniumBaseResult.status) this.seleniumBaseBrowserStatuses[profileId] = seleniumBaseResult.status;
+    }));
+  }
+
+  isProfileBrowserOpen(profileId: string): boolean {
+    return this.profileBrowserStatuses[profileId]?.open === true;
+  }
+
+  isSeleniumBaseBrowserOpen(profileId: string): boolean {
+    return this.seleniumBaseBrowserStatuses[profileId]?.open === true;
+  }
+
+  getProfileBrowserStatusText(profileId: string): string {
+    const status = this.profileBrowserStatuses[profileId];
+    if (!status?.open) return "geschlossen";
+    return status.pid ? `offen · PID ${status.pid}` : "offen";
+  }
+
+  getSeleniumBaseBrowserStatusText(profileId: string): string {
+    const status = this.seleniumBaseBrowserStatuses[profileId];
+    if (!status?.open) return "geschlossen";
+    return status.pid ? `offen · PID ${status.pid}` : "offen";
+  }
+
+  async openManualProfileBrowser(profile: ProfileView): Promise<void> {
+    const profileId = String(profile.id ?? "").trim();
+    if (!profileId || this.profileBrowserBusyIds.has(profileId)) return;
+    this.profileBrowserBusyIds.add(profileId);
+    this.settingsMessage = "";
+    try {
+      const result = await this.profileBrowser.open(profileId, this.settingsStartUrls[profileId]?.trim() || undefined);
+      if (!result?.success) {
+        this.settingsMessage = result?.error || "Profilbrowser konnte nicht geöffnet werden.";
+        return;
+      }
+      this.profileBrowserStatuses[profileId] = result.status;
+      this.settingsMessage = `${profile.name || profileId}: Profilbrowser geöffnet.`;
+    } finally {
+      this.profileBrowserBusyIds.delete(profileId);
+    }
+  }
+
+  async closeManualProfileBrowser(profile: ProfileView): Promise<void> {
+    const profileId = String(profile.id ?? "").trim();
+    if (!profileId || this.profileBrowserBusyIds.has(profileId)) return;
+    this.profileBrowserBusyIds.add(profileId);
+    this.settingsMessage = "";
+    try {
+      const result = await this.profileBrowser.close(profileId);
+      if (!result?.success) {
+        this.settingsMessage = result?.error || "Profilbrowser konnte nicht geschlossen werden.";
+        return;
+      }
+      this.profileBrowserStatuses[profileId] = result.status;
+      this.settingsMessage = `${profile.name || profileId}: Profilbrowser geschlossen.`;
+    } finally {
+      this.profileBrowserBusyIds.delete(profileId);
+    }
+  }
+
+  async openSeleniumBaseProfileBrowser(profile: ProfileView): Promise<void> {
+    const profileId = String(profile.id ?? "").trim();
+    if (!profileId || this.seleniumBaseBrowserBusyIds.has(profileId)) return;
+    this.seleniumBaseBrowserBusyIds.add(profileId);
+    this.settingsMessage = "";
+    try {
+      const result = await this.profileBrowser.openSeleniumBase(profileId, this.settingsStartUrls[profileId]?.trim() || undefined);
+      if (!result?.success) {
+        this.settingsMessage = result?.error || "SeleniumBase-CDP konnte nicht geöffnet werden.";
+        return;
+      }
+      this.seleniumBaseBrowserStatuses[profileId] = result.status;
+      this.settingsMessage = `${profile.name || profileId}: SeleniumBase-CDP geöffnet.`;
+    } finally {
+      this.seleniumBaseBrowserBusyIds.delete(profileId);
+    }
+  }
+
+  async closeSeleniumBaseProfileBrowser(profile: ProfileView): Promise<void> {
+    const profileId = String(profile.id ?? "").trim();
+    if (!profileId || this.seleniumBaseBrowserBusyIds.has(profileId)) return;
+    this.seleniumBaseBrowserBusyIds.add(profileId);
+    this.settingsMessage = "";
+    try {
+      const result = await this.profileBrowser.closeSeleniumBase(profileId);
+      if (!result?.success) {
+        this.settingsMessage = result?.error || "SeleniumBase-CDP konnte nicht geschlossen werden.";
+        return;
+      }
+      this.seleniumBaseBrowserStatuses[profileId] = result.status;
+      this.settingsMessage = `${profile.name || profileId}: SeleniumBase-CDP geschlossen.`;
+    } finally {
+      this.seleniumBaseBrowserBusyIds.delete(profileId);
+    }
+  }
+
+  async resetProfileBrowserSession(profile: ProfileView): Promise<void> {
+    const profileId = String(profile.id ?? "").trim();
+    if (!profileId || this.profileBrowserBusyIds.has(profileId)) return;
+    const confirmed = !this.uiSettings.confirmDestructive || typeof window === "undefined" || window.confirm(
+      `Browser-Session für ${profile.name || profileId} löschen?\n\nCookies, Storage, Cache, Cookie-Snapshots und gespeicherter User-Agent werden entfernt.`
+    );
+    if (!confirmed) return;
+
+    this.profileBrowserBusyIds.add(profileId);
+    this.settingsMessage = "";
+    try {
+      const persisted = toPersistedAresProfile(profile);
+      const saveResult = await this.electron.saveProfile(clearProfileBrowserUserAgent(persisted));
+      if (!saveResult?.success) {
+        this.settingsMessage = saveResult?.error || "User-Agent konnte vor dem Reset nicht zurückgesetzt werden.";
+        return;
+      }
+      const result = await this.profileBrowser.resetSession(profileId);
+      if (!result?.success) {
+        this.settingsMessage = result?.error || "Browser-Session konnte nicht gelöscht werden.";
+        return;
+      }
+      this.profileBrowserStatuses[profileId] = result.status;
+      this.seleniumBaseBrowserStatuses[profileId] = result.status;
+      this.settingsMessage = `${profile.name || profileId}: Browser-Session gelöscht.`;
+      await this.loadProfiles();
+    } finally {
+      this.profileBrowserBusyIds.delete(profileId);
+    }
+  }
+
   selectModuleMode(mode: ModuleModeId): void {
     this.moduleMode = mode;
+    if (mode === "monitor") {
+      this.setMonitorStrategy("product-monitor");
+      this.taskMode = "monitor-only";
+      return;
+    }
     if (mode === "early-gate") {
       this.setMonitorStrategy("early-gate");
       return;
@@ -400,23 +742,54 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   async loadCaptchaProviders(): Promise<void> {
     const api = (window as any).ares;
-    if (!api?.listCaptchaProviders) return;
+    if (!api?.listCaptchaProviders) {
+      this.captchaProviderApiAvailable = false;
+      this.captchaProviders = this.fallbackCaptchaProviders.map(provider => ({ ...provider }));
+      return;
+    }
     const result = await api.listCaptchaProviders().catch(() => undefined);
-    if (result?.success) this.captchaProviders = result.providers || [];
+    if (result?.success) {
+      this.captchaProviderApiAvailable = true;
+      this.captchaProviders = result.providers?.length
+        ? result.providers
+        : this.fallbackCaptchaProviders.map(provider => ({ ...provider }));
+    } else {
+      this.captchaProviderApiAvailable = false;
+      this.captchaProviders = this.fallbackCaptchaProviders.map(provider => ({ ...provider }));
+      this.captchaModeNotice = result?.error || "Captcha-Provider konnten nicht vom Backend geladen werden.";
+    }
     const mode = await api.getCaptchaMode?.().catch(() => undefined);
     if (mode?.success) this.captchaMode = mode.mode;
   }
 
   async setCaptchaMode(mode: "siglip" | "siglip-api" | "api"): Promise<void> {
+    this.captchaMode = mode;
+    this.captchaModeNotice = "";
+    const configuredApiProviders = this.captchaProviders.filter(provider => provider.configured);
+    if (mode === "api" && !configuredApiProviders.length) {
+      this.captchaModeNotice = "Nur API ist ausgewählt, aber es ist noch kein Captcha-API-Key hinterlegt. Anbieter unten hinzufügen und speichern.";
+    } else if (mode === "siglip-api" && !configuredApiProviders.length) {
+      this.captchaModeNotice = "SigLIP ist aktiv. API-Fallback startet erst, wenn ein Anbieter-Key gespeichert ist.";
+    } else if (mode === "siglip") {
+      this.captchaModeNotice = "Nur lokales SigLIP ist aktiv. Externe API-Anbieter werden übersprungen.";
+    }
+
     const api = (window as any).ares;
     if (!api?.setCaptchaMode) return;
     const result = await api.setCaptchaMode(mode).catch(() => undefined);
-    if (result?.success) this.captchaMode = result.mode;
+    if (result?.success) {
+      this.captchaMode = result.mode;
+      return;
+    }
+    this.captchaModeNotice = result?.error || this.captchaModeNotice || "Captcha-Modus konnte nicht gespeichert werden.";
   }
 
   async saveCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
-    if (!api?.saveCaptchaProvider) return;
+    if (!api?.saveCaptchaProvider) {
+      this.captchaStatus[id] = "Speichern ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      return;
+    }
     this.captchaBusy = true;
     try {
       const result = await api.saveCaptchaProvider(id, { apiKey: this.captchaKeyDrafts[id] || "", enabled: true });
@@ -434,7 +807,10 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   async deleteCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
-    if (!api?.deleteCaptchaProvider) return;
+    if (!api?.deleteCaptchaProvider) {
+      this.captchaStatus[id] = "Entfernen ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      return;
+    }
     this.captchaBusy = true;
     try {
       await api.deleteCaptchaProvider(id);
@@ -447,7 +823,10 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   async testCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
-    if (!api?.testCaptchaProvider) return;
+    if (!api?.testCaptchaProvider) {
+      this.captchaStatus[id] = "Test ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      return;
+    }
     this.captchaBusy = true;
     this.captchaStatus[id] = "Teste…";
     try {
@@ -468,8 +847,60 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     }
   }
 
+  isCaptchaStatusSuccess(value?: string): boolean {
+    return /gespeichert|entfernt|gültig/i.test(value || "");
+  }
+
+  isCaptchaStatusWarning(value?: string): boolean {
+    return /electron-app|preload|ipc|teste|nicht verfügbar/i.test(value || "");
+  }
+
+  isCaptchaStatusError(value?: string): boolean {
+    return /fehlgeschlagen|abgelehnt|fehler|error/i.test(value || "");
+  }
+
+  async loadVisionStatus(): Promise<void> {
+    const result = await this.electron.getSeleniumBaseVisionStatus().catch(error => ({
+      success: false,
+      error: error instanceof Error ? error.message : String(error)
+    }));
+    if (!result?.success) {
+      this.visionStatus = { ready: false, error: result?.error || "Status nicht verfügbar." };
+      this.visionStatusText = this.visionStatus.error || "Status nicht verfügbar.";
+      return;
+    }
+    this.visionStatus = result.status ?? {};
+    this.visionStatusText = this.getVisionStatusLabel();
+  }
+
+  async prepareVisionRuntime(): Promise<void> {
+    if (this.visionBusy) return;
+    this.visionBusy = true;
+    this.error = "";
+    this.info = "";
+    this.visionStatusText = "SigLIP2 wird lokal vorbereitet…";
+    try {
+      const result = await this.electron.prepareSeleniumBaseVision();
+      if (!result?.success) {
+        this.visionStatus = { ready: false, error: result?.error || "Vorbereitung fehlgeschlagen." };
+        this.visionStatusText = this.visionStatus.error || "Vorbereitung fehlgeschlagen.";
+        this.error = this.visionStatusText;
+        return;
+      }
+      const status = (result.status ?? {}) as VisionRuntimeStatus;
+      this.visionStatus = status;
+      this.visionStatusText = this.getVisionStatusLabel();
+      this.info = status.ready
+        ? "SigLIP2 ist lokal vorbereitet."
+        : status.error || "SigLIP2 ist noch nicht bereit.";
+    } finally {
+      this.visionBusy = false;
+    }
+  }
+
   onShopSelected(): void {
     const shop = this.shops.find(item => item.id === this.selectedShopId);
+    if (this.activeTab === "modules" && this.moduleMode === "monitor") return;
     if (shop && this.monitorStrategyMode === "product-monitor" && this.isPokemonCenterShop(shop)) {
       this.setMonitorStrategy("early-gate");
     }
@@ -491,6 +922,46 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   get checkoutRuns(): TaskView[] {
     return this.tasks.filter(task => this.isCheckoutChildTask(task));
+  }
+
+  get monitorTasks(): TaskView[] {
+    return this.tasks.filter(task => this.isMonitorTask(task));
+  }
+
+  get monitorTaskCount(): number {
+    return this.monitorTasks.length;
+  }
+
+  get errorTaskCount(): number {
+    return this.tasks.filter(task => task.state === TaskState.FAILED || Boolean(task.lastError)).length;
+  }
+
+  get runningTaskCount(): number {
+    return this.tasks.filter(task => task.state === TaskState.RUNNING).length;
+  }
+
+  get queuedTaskCount(): number {
+    return this.tasks.filter(task => task.state === TaskState.QUEUED).length;
+  }
+
+  get stoppedTaskCount(): number {
+    return this.tasks.filter(task => [TaskState.FAILED, TaskState.CANCELLED].includes(task.state)).length;
+  }
+
+  get readyModuleCount(): number {
+    return this.modules.filter(module => this.getModuleStatusLevel(module) === "ready").length;
+  }
+
+  get partialModuleCount(): number {
+    return this.modules.filter(module => this.getModuleStatusLevel(module) === "partial").length;
+  }
+
+  get plannedModuleCount(): number {
+    return this.modules.filter(module => this.getModuleStatusLevel(module) === "planned").length;
+  }
+
+  get recentTasks(): TaskView[] {
+    return this.tasks.slice().reverse().slice(0, 8);
   }
 
   get activeTaskCount(): number {
@@ -603,7 +1074,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     if (event) event.stopPropagation();
     this.error = "";
     this.info = "";
-    if (!window.confirm(`Profil „${profile.name}" wirklich löschen? Browserdaten und Cookie-Snapshots werden ebenfalls entfernt.`)) return;
+    if (this.uiSettings.confirmDestructive && !window.confirm(`Profil „${profile.name}" wirklich löschen? Browserdaten und Cookie-Snapshots werden ebenfalls entfernt.`)) return;
     const result = await this.electron.deleteProfile(profile.id);
     if (!result.success) {
       this.error = result.error;
@@ -649,6 +1120,69 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     this.info = `Proxy ${result.proxy?.name || proxy.name} gespeichert.`;
     this.newProxy = this.emptyProxy();
     await Promise.all([this.loadProxies(), this.loadSystemStatus()]);
+  }
+
+  updateProxyImportPreview(): void {
+    const seen = new Set<string>();
+    const existing = new Set(this.proxies.map(proxy => this.proxyFingerprint(proxy)));
+    this.proxyImportPreview = this.proxyImportDraft
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map((line, index) => {
+        const parsed = this.parseProxyImportLine(line, index);
+        if (!parsed.valid || !parsed.proxy) return parsed;
+        const fingerprint = this.proxyFingerprint(parsed.proxy);
+        const duplicate = existing.has(fingerprint) || seen.has(fingerprint);
+        seen.add(fingerprint);
+        return duplicate ? { ...parsed, duplicate: true, error: "Duplikat" } : parsed;
+      });
+  }
+
+  async importProxyPreview(): Promise<void> {
+    this.updateProxyImportPreview();
+    const validRows = this.proxyImportPreview.filter(row => row.valid && row.proxy && !row.duplicate);
+    if (!validRows.length || this.proxyImportSaving) {
+      this.error = "Keine gültigen neuen Proxies zum Importieren.";
+      return;
+    }
+
+    this.proxyImportSaving = true;
+    this.error = "";
+    this.info = `Importiere ${validRows.length} Proxy(s)…`;
+    let saved = 0;
+    const failures: string[] = [];
+    try {
+      for (const row of validRows) {
+        const result = await this.electron.saveProxy(row.proxy);
+        if (result?.success) saved += 1;
+        else failures.push(`${row.line}: ${result?.error || "Speichern fehlgeschlagen"}`);
+      }
+    } finally {
+      this.proxyImportSaving = false;
+    }
+
+    await Promise.all([this.loadProxies(), this.loadSystemStatus()]);
+    if (failures.length) {
+      this.error = failures.slice(0, 3).join(" · ");
+    }
+    this.info = failures.length
+      ? `${saved}/${validRows.length} Proxies importiert · ${failures.length} Fehler.`
+      : `${saved} Proxies importiert.`;
+    if (!failures.length) this.proxyImportDraft = "";
+    this.updateProxyImportPreview();
+  }
+
+  get proxyImportValidCount(): number {
+    return this.proxyImportPreview.filter(row => row.valid && !row.duplicate).length;
+  }
+
+  get proxyImportInvalidCount(): number {
+    return this.proxyImportPreview.filter(row => !row.valid).length;
+  }
+
+  get proxyImportDuplicateCount(): number {
+    return this.proxyImportPreview.filter(row => row.duplicate).length;
   }
 
   async testProxy(proxy: AresProxy): Promise<void> {
@@ -1081,7 +1615,7 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   }
 
   async deleteTask(taskId: string): Promise<void> {
-    const confirmed = typeof window === "undefined" || window.confirm(
+    const confirmed = !this.uiSettings.confirmDestructive || typeof window === "undefined" || window.confirm(
       "Task dauerhaft löschen? Verlauf, Logs und Monitor-Ereignisse werden entfernt."
     );
     if (!confirmed) return;
@@ -1261,6 +1795,59 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
     const data = task.config.data ?? {};
     const value = data["liveChallengeStatus"] ?? data["captchaStatus"] ?? data["challengeStatus"];
     return value ? String(value) : "Kein aktueller Challenge-Status";
+  }
+
+  getMonitorPipeline(task: TaskView): Record<string, unknown> | undefined {
+    const value = task.config.data?.["monitorPipeline"];
+    return value && typeof value === "object" ? value as Record<string, unknown> : undefined;
+  }
+
+  getMonitorStage(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    const strategy = task.config.data?.["monitorStrategy"] as Record<string, unknown> | undefined;
+    return String(pipeline?.["stage"] ?? strategy?.["mode"] ?? "monitoring").replace(/-/g, " ");
+  }
+
+  getMonitorSource(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    return String(pipeline?.["source"] ?? pipeline?.["mode"] ?? "—");
+  }
+
+  getMonitorAvailability(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    const state = pipeline?.["productState"];
+    if (typeof pipeline?.["available"] === "boolean") return pipeline["available"] ? "Available" : "Not available";
+    return state ? String(state) : "—";
+  }
+
+  getMonitorStatusCode(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    const code = pipeline?.["statusCode"];
+    return typeof code === "number" || typeof code === "string" ? String(code) : "—";
+  }
+
+  getMonitorQueueSummary(task: TaskView): string {
+    const queue = task.config.data?.["queueStatus"] as Record<string, unknown> | undefined;
+    const position = queue?.["position"];
+    const wait = queue?.["timeToWaitSeconds"];
+    if (position === undefined && wait === undefined) return "—";
+    const parts = [];
+    if (position !== undefined) parts.push(`Position ${position}`);
+    if (wait !== undefined) parts.push(`${wait}s wait`);
+    return parts.join(" · ");
+  }
+
+  getMonitorUpdatedAt(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    const raw = pipeline?.["updatedAt"] ?? task.config.data?.["updatedAt"];
+    if (!raw) return "—";
+    const date = new Date(String(raw));
+    return Number.isNaN(date.getTime()) ? String(raw) : date.toLocaleString("de-DE");
+  }
+
+  getMonitorError(task: TaskView): string {
+    const pipeline = this.getMonitorPipeline(task);
+    return String(pipeline?.["error"] ?? task.lastError ?? "");
   }
 
   getTaskChallengeType(task: TaskView): string {
@@ -1477,5 +2064,98 @@ export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
 
   private emptyProxy(): AresProxy {
     return { id: "", name: "", protocol: "http", host: "", port: 8080, username: "", password: "" };
+  }
+
+  private getVisionStatusLabel(): string {
+    if (!this.visionStatus) return "Noch nicht geprüft.";
+    if (this.visionStatus.ready) {
+      const model = this.visionStatus.model ? ` · ${this.visionStatus.model}` : "";
+      const device = this.visionStatus.device ? ` · ${this.visionStatus.device}` : "";
+      return `Bereit${model}${device}`;
+    }
+    if (this.visionStatus.error) return this.visionStatus.error;
+    if (this.visionStatus.dependenciesReady === false) return "Abhängigkeiten fehlen.";
+    return "Nicht bereit.";
+  }
+
+  private parseProxyImportLine(line: string, index: number): ProxyImportPreview {
+    let protocol: ProxyProtocol = "http";
+    let host = "";
+    let port = 0;
+    let username = "";
+    let password = "";
+
+    try {
+      if (/^(https?|socks5):\/\//i.test(line)) {
+        const url = new URL(line);
+        protocol = url.protocol.replace(":", "") as ProxyProtocol;
+        host = url.hostname;
+        port = Number(url.port);
+        username = decodeURIComponent(url.username || "");
+        password = decodeURIComponent(url.password || "");
+      } else if (line.includes("@")) {
+        const [auth, endpoint] = line.split("@");
+        const [rawUser, ...rawPass] = auth.split(":");
+        username = rawUser || "";
+        password = rawPass.join(":");
+        const parts = endpoint.split(":");
+        host = parts[0] || "";
+        port = Number(parts[1]);
+      } else {
+        const parts = line.split(":");
+        if (parts.length === 2 || parts.length === 4) {
+          host = parts[0] || "";
+          port = Number(parts[1]);
+          username = parts[2] || "";
+          password = parts[3] || "";
+        }
+      }
+    } catch (error) {
+      return { line, valid: false, duplicate: false, error: error instanceof Error ? error.message : "Ungültiges Format" };
+    }
+
+    if (!["http", "https", "socks5"].includes(protocol)) {
+      return { line, valid: false, duplicate: false, error: "Protokoll muss HTTP, HTTPS oder SOCKS5 sein." };
+    }
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      return { line, valid: false, duplicate: false, error: "Host oder Port ungültig." };
+    }
+
+    const id = this.buildProxyImportId(host, port, index);
+    const proxy: AresProxy = {
+      id,
+      name: `${host}:${port}`,
+      protocol,
+      host,
+      port,
+      username: username.trim() || undefined,
+      password: password || undefined
+    };
+    return { line, proxy, valid: true, duplicate: false };
+  }
+
+  private buildProxyImportId(host: string, port: number, index: number): string {
+    const slug = `${host}-${port}`.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "proxy";
+    let id = `proxy-${slug}-${index + 1}`;
+    const existingIds = new Set([
+      ...this.proxies.map(proxy => proxy.id),
+      ...(this.proxyImportPreview.map(row => row.proxy?.id).filter(Boolean) as string[])
+    ]);
+    let counter = index + 1;
+    while (existingIds.has(id)) {
+      id = `proxy-${slug}-${counter}`;
+      counter += 1;
+    }
+    return id;
+  }
+
+  private proxyFingerprint(proxy: AresProxy): string {
+    return [
+      proxy.protocol,
+      proxy.host.trim().toLowerCase(),
+      Number(proxy.port),
+      proxy.username?.trim().toLowerCase() || "",
+      proxy.password || ""
+    ].join("|");
   }
 }

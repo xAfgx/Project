@@ -1,12 +1,12 @@
 <section class="cookie-vault" [class.selector]="mode === 'select'">
   <div class="cookie-head">
     <div>
-      <div class="eyebrow">COOKIE SNAPSHOTS</div>
-      <strong>{{ mode === 'manage' ? 'Eigene Browser-Cookies speichern' : 'Cookie-Snapshot für diesen Run' }}</strong>
-      <small *ngIf="mode === 'manage'">Nur auf deine ausdrückliche Aktion. Cookies werden OS-verschlüsselt gespeichert.</small>
-      <small *ngIf="mode === 'select'">Optional. Ohne Auswahl nutzt ARES nur den normalen Browserprofil-State.</small>
+      <div class="eyebrow">BROWSER-SESSION</div>
+      <strong>{{ mode === 'manage' ? 'Login-Stand speichern' : 'Session für diesen Run' }}</strong>
+      <small *ngIf="mode === 'manage'">Speichert den aktuellen Login-/Cookie-Stand deines Profilbrowsers verschlüsselt.</small>
+      <small *ngIf="mode === 'select'">Optional. Ohne Auswahl nutzt ARES den normalen Browserzustand vom Profil.</small>
     </div>
-    <span class="vault-chip">ENCRYPTED</span>
+    <span class="vault-chip">GESCHÜTZT</span>
   </div>
 
   <div *ngIf="!profileId" class="cookie-empty">Zuerst ein Profil auswählen.</div>
@@ -46,16 +46,16 @@
           <span>Profilpfad</span><code>{{ seleniumBaseUserDataDir }}</code>
         </div>
         <div class="session-actions" *ngIf="seleniumBaseBrowserOpen">
-          <button class="btn btn-small btn-secondary" type="button" [disabled]="busy || !selectedId" (click)="applySelectedToSeleniumBase()">Ausgewählten Snapshot in laufende Session laden</button>
-          <span *ngIf="seleniumBaseAppliedSnapshotId">Snapshot aktiv: {{ seleniumBaseAppliedSnapshotId }}</span>
+          <button class="btn btn-small btn-secondary" type="button" [disabled]="busy || !selectedId" (click)="applySelectedToSeleniumBase()">Ausgewählte Session laden</button>
+          <span *ngIf="seleniumBaseAppliedSnapshotId">Session aktiv: {{ seleniumBaseAppliedSnapshotId }}</span>
         </div>
       </div>
     </div>
 
     <div class="snapshot-create">
       <input [(ngModel)]="snapshotName" [disabled]="busy" placeholder="z. B. Pokémon Login · 04.09.">
-      <button class="btn btn-primary" type="button" [disabled]="busy || !browserOpen" (click)="saveSnapshot()">Browser-Cookies speichern</button>
-      <button class="btn btn-primary" type="button" [disabled]="busy || !seleniumBaseBrowserOpen" (click)="saveSeleniumBaseSnapshot()">CDP-Cookies speichern</button>
+      <button class="btn btn-primary" type="button" [disabled]="busy || !browserOpen" (click)="saveSnapshot()">Browser-Session speichern</button>
+      <button class="btn btn-primary" type="button" [disabled]="busy || !seleniumBaseBrowserOpen" (click)="saveSeleniumBaseSnapshot()">CDP-Session speichern</button>
     </div>
   </ng-container>
 
@@ -64,9 +64,9 @@
 
   <div class="snapshot-select" *ngIf="profileId && mode === 'select'">
     <label>
-      <span>Cookie-Quelle</span>
+      <span>Session-Quelle</span>
       <select [ngModel]="selectedId" (ngModelChange)="select($event)">
-        <option value="">Browserprofil normal verwenden</option>
+        <option value="">Normales Profil verwenden</option>
         <option *ngFor="let snapshot of snapshots" [value]="snapshot.id">{{ snapshot.name }} · {{ snapshot.cookieCount }} Cookies</option>
       </select>
     </label>
@@ -75,9 +75,9 @@
 
   <div class="snapshot-select" *ngIf="profileId && mode === 'manage' && snapshots.length">
     <label>
-      <span>Snapshot für SeleniumBase-Test / nächsten Run</span>
+      <span>Session für SeleniumBase-Test / nächsten Run</span>
       <select [ngModel]="selectedId" (ngModelChange)="select($event)">
-        <option value="">Keinen Snapshot vorladen</option>
+        <option value="">Keine Session vorladen</option>
         <option *ngFor="let snapshot of snapshots" [value]="snapshot.id">{{ snapshot.name }} · {{ snapshot.cookieCount }} Cookies</option>
       </select>
     </label>
@@ -85,10 +85,10 @@
   </div>
 
   <div class="snapshot-list" *ngIf="profileId && mode === 'manage'">
-    <div class="cookie-empty" *ngIf="!snapshots.length">Noch kein Snapshot gespeichert.</div>
+    <div class="cookie-empty" *ngIf="!snapshots.length">Noch keine Session gespeichert.</div>
     <article class="snapshot-card" *ngFor="let snapshot of snapshots" [class.selected]="snapshot.id === selectedId">
       <button type="button" class="snapshot-main" (click)="select(snapshot.id)">
-        <span class="snapshot-orbit">◌</span>
+        <span class="snapshot-orbit">●</span>
         <span><strong>{{ snapshot.name }}</strong><small>{{ snapshot.cookieCount }} Cookies · {{ formatDate(snapshot.updatedAt) }}</small></span>
       </button>
       <button type="button" class="delete-snapshot" [disabled]="busy" (click)="deleteSnapshot(snapshot)" aria-label="Snapshot löschen">×</button>

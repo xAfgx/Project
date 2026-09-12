@@ -20,7 +20,7 @@
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
             "assets": ["src/assets"],
-            "styles": ["src/app/app.component.scss", "src/app/early-gate-ui.scss", "src/app/runtime-control/runtime-control-extras.scss", "src/app/navigation-cleanup.scss", "src/app/cosmic-theme.scss", "src/app/modules-ui.scss"],
+            "styles": ["src/app/app.component.scss", "src/app/early-gate-ui.scss", "src/app/runtime-control/runtime-control-extras.scss", "src/app/navigation-cleanup.scss", "src/app/cosmic-theme.scss", "src/app/modules-ui.scss", "src/app/ares-design-system.scss"],
             "scripts": []
           },
           "configurations": {
