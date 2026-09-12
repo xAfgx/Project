@@ -1,4 +1,4 @@
-import type { Locator, Page } from "./types";
+import type { Page } from "./types";
 import type { AresProfile } from "../profiles/models";
 import {
   SemanticCheckoutTraceRecorder,
@@ -76,81 +76,72 @@ export class SemanticCheckoutProfilePlanner {
   }
 
   private async activateSameAsShipping(page: Page): Promise<boolean> {
-    const candidates = page.locator('label, button, [role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]');
-    const count = Math.min(await candidates.count().catch(() => 0), 120);
+    const selector = 'label, button, [role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]';
+    const candidates = page.locator(selector);
+    // One evaluateAll instead of up to 120 candidate × 3 RPC round-trips: this
+    // was the dominant cost between "checkout opened" and "preparing".
+    const match = await candidates.evaluateAll((elements, args) => {
+      const re = new RegExp(String(args.source), String(args.flags));
+      for (let index = 0; index < elements.length && index < 200; index++) {
+        const element = elements[index];
+        const id = element.id || "";
+        const explicitLabel = id
+          ? Array.from(document.querySelectorAll("label")).find(label => label.htmlFor === id)?.textContent || ""
+          : "";
+        const enclosingLabel = element.closest("label")?.textContent || "";
+        const text = [
+          element.textContent || "",
+          element.getAttribute("aria-label") || "",
+          element.getAttribute("name") || "",
+          element.getAttribute("id") || "",
+          explicitLabel,
+          enclosingLabel
+        ].join(" ").replace(/\s+/g, " ").trim();
+        if (!re.test(text)) continue;
 
-    for (let index = 0; index < count; index++) {
-      const candidate = candidates.nth(index);
-      const text = await this.candidateText(candidate).catch(() => "");
-      if (!SAME_AS_SHIPPING_TEXT.test(text)) continue;
+        const tag = element.tagName.toLowerCase();
+        const type = (element.getAttribute("type") || "").toLowerCase();
+        const role = (element.getAttribute("role") || "").toLowerCase();
+        let usable = false;
+        if (tag === "input" && (type === "checkbox" || type === "radio")) usable = true;
+        else if (role === "checkbox" || role === "radio" || tag === "button") usable = true;
+        else if (tag === "label") {
+          const htmlFor = (element as HTMLLabelElement).htmlFor || element.getAttribute("for") || "";
+          usable = Boolean(htmlFor && document.getElementById(htmlFor)) ||
+            Boolean(element.querySelector('input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"]'));
+        }
+        if (!usable) continue;
 
-      const control = await this.resolveControl(candidate);
-      if (!control || !await control.isVisible({ timeout: 120 }).catch(() => false)) continue;
-      if (await this.isSelected(control)) return true;
+        let selected = false;
+        if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
+          selected = element.checked;
+        } else if (element instanceof HTMLLabelElement) {
+          const target = element.htmlFor
+            ? document.getElementById(element.htmlFor)
+            : element.querySelector('input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"]');
+          if (target instanceof HTMLInputElement) selected = target.checked;
+          else selected = target?.getAttribute("aria-checked") === "true";
+        } else {
+          selected = element.getAttribute("aria-checked") === "true";
+        }
+        return { index, selected };
+      }
+      return { index: -1, selected: false };
+    }, { source: SAME_AS_SHIPPING_TEXT.source, flags: SAME_AS_SHIPPING_TEXT.flags }).catch(() => ({ index: -1, selected: false }));
 
-      await this.interactions.click(control, {
-        attempts: 2,
-        seed: "semantic-billing:same-as-shipping"
-      }).catch(() => undefined);
-      if (await this.isSelected(control)) return true;
-    }
+    if (match.index < 0) return false;
+    if (match.selected) return true;
 
-    return false;
-  }
-
-  private async candidateText(locator: Locator): Promise<string> {
-    return locator.evaluate(element => {
-      const input = element as HTMLInputElement;
-      const id = input.id || "";
-      const explicitLabel = id
-        ? Array.from(document.querySelectorAll("label")).find(label => label.htmlFor === id)?.textContent || ""
-        : "";
-      const enclosingLabel = element.closest("label")?.textContent || "";
-      return [
-        element.textContent || "",
-        element.getAttribute("aria-label") || "",
-        element.getAttribute("name") || "",
-        element.getAttribute("id") || "",
-        explicitLabel,
-        enclosingLabel
-      ].join(" ").replace(/\s+/g, " ").trim();
-    });
-  }
-
-  private async resolveControl(candidate: Locator): Promise<Locator | undefined> {
-    const usable = await candidate.evaluate(element => {
-      const tag = element.tagName.toLowerCase();
-      const type = (element.getAttribute("type") || "").toLowerCase();
-      const role = (element.getAttribute("role") || "").toLowerCase();
-      if (tag === "input" && (type === "checkbox" || type === "radio")) return true;
-      if (role === "checkbox" || role === "radio" || tag === "button") return true;
-      if (tag !== "label") return false;
-
-      const htmlFor = (element as HTMLLabelElement).htmlFor || element.getAttribute("for") || "";
-      if (htmlFor && document.getElementById(htmlFor)) return true;
-      return Boolean(element.querySelector('input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"]'));
-    }).catch(() => false);
-    return usable ? candidate : undefined;
-  }
-
-  private async isSelected(control: Locator): Promise<boolean> {
+    const control = candidates.nth(match.index);
+    if (!await control.isVisible({ timeout: 200 }).catch(() => false)) return false;
+    await this.interactions.click(control, {
+      attempts: 2,
+      seed: "semantic-billing:same-as-shipping"
+    }).catch(() => undefined);
     return control.evaluate(element => {
+      if (element instanceof HTMLInputElement) return element.checked;
       const ariaChecked = element.getAttribute("aria-checked");
-      if (ariaChecked === "true") return true;
-      if (ariaChecked === "false") return false;
-
-      if (element instanceof HTMLInputElement && (element.type === "checkbox" || element.type === "radio")) {
-        return element.checked;
-      }
-
-      if (element instanceof HTMLLabelElement) {
-        const explicit = element.htmlFor ? document.getElementById(element.htmlFor) : null;
-        const nested = element.querySelector('input[type="checkbox"], input[type="radio"], [role="checkbox"], [role="radio"]');
-        const target = explicit || nested;
-        if (target instanceof HTMLInputElement) return target.checked;
-        return target?.getAttribute("aria-checked") === "true";
-      }
-
+      if (ariaChecked) return ariaChecked === "true";
       return false;
     }).catch(() => false);
   }

@@ -295,6 +295,12 @@ export class FieldSemanticResolver {
 
   private resolveIntentFromStandardMetadata(field: FieldDescriptor): ResolutionPart<FieldIntent> | undefined {
     const tokens = field.autocomplete.toLowerCase().split(/\s+/).filter(Boolean);
+    // Payment/credit-card controls must never map to profile intents. Card
+    // number inputs are commonly type="tel", which would otherwise be treated
+    // as a phone field and filled with the profile phone number.
+    if (tokens.some(token => token.startsWith("cc-") || token === "credit-card" || token === "payment")) {
+      return undefined;
+    }
     for (const token of tokens) {
       const intent = AUTOCOMPLETE_INTENTS[token];
       if (intent) return { value: intent, confidence: 1, source: "standard-metadata" };
@@ -511,8 +517,12 @@ export class FieldSemanticResolver {
   }
 }
 
-export async function collectFieldDescriptors(page: Page): Promise<FieldDescriptor[]> {
-  return page.locator(CONTROL_SELECTOR).evaluateAll(elements => elements.map((raw, index) => {
+export interface FieldHost {
+  locator(selector: string): Locator;
+}
+
+export async function collectFieldDescriptors(host: FieldHost): Promise<FieldDescriptor[]> {
+  return host.locator(CONTROL_SELECTOR).evaluateAll(elements => elements.map((raw, index) => {
     const element = raw as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
     const labels = "labels" in element && element.labels
       ? Array.from(element.labels).map(label => label.textContent || "").join(" ")
@@ -536,6 +546,6 @@ export async function collectFieldDescriptors(page: Page): Promise<FieldDescript
   }));
 }
 
-export function fieldLocator(page: Page, index: number): Locator {
-  return page.locator(CONTROL_SELECTOR).nth(index);
+export function fieldLocator(host: FieldHost, index: number): Locator {
+  return host.locator(CONTROL_SELECTOR).nth(index);
 }

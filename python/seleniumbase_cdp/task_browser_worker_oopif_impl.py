@@ -51,6 +51,8 @@ class FlatCdpTargetRegistry:
         self._frame_routes: Dict[str, Dict[str, Any]] = {}
         self._frame_contexts: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._session_frames: Dict[str, set[str]] = {}
+        # child frameId -> parent frameId, recorded while resolving frame paths.
+        self._frame_parents: Dict[str, str] = {}
         if autostart:
             self._thread = threading.Thread(target=self._thread_main, name="ares-oopif-cdp", daemon=True)
             self._thread.start()
@@ -273,15 +275,33 @@ class FlatCdpTargetRegistry:
             await self._send_command("Runtime.enable", {}, session_id=session_id)
             # Auto-attach is direct-child scoped, therefore repeat it for every
             # page/iframe session so nested OOPIFs are attached recursively.
+            # waitForDebuggerOnStart pauses every new child until it is prepared:
+            # workers receive the fingerprint script (Target.attachedToTarget
+            # handler) before they run, iframes/pages are resumed right after
+            # this initialization. Excluding service/shared workers keeps
+            # browser-level targets out of the page-scoped pause.
             await self._send_command(
                 "Target.setAutoAttach",
                 {
                     "autoAttach": True,
-                    "waitForDebuggerOnStart": False,
+                    "waitForDebuggerOnStart": True,
                     "flatten": True,
+                    "filter": [
+                        {"type": "worker", "exclude": False},
+                        {"type": "iframe", "exclude": False},
+                        {"type": "page", "exclude": False},
+                        {"type": "service_worker", "exclude": True},
+                        {"type": "shared_worker", "exclude": True},
+                    ],
                 },
                 session_id=session_id,
             )
+            # The session itself may be a paused child target; resume it now that
+            # DOM/Runtime are enabled and its own children are wired up.
+            try:
+                await self._send_command("Runtime.runIfWaitingForDebugger", {}, session_id=session_id)
+            except Exception:
+                pass
             with self._lock:
                 session = self._sessions.get(session_id)
                 if session is not None:
@@ -413,6 +433,10 @@ class FlatCdpTargetRegistry:
             route = self._frame_routes.get(str(frame_id))
             return dict(route) if route is not None else None
 
+    def frame_parent(self, frame_id: str) -> str:
+        with self._lock:
+            return str(self._frame_parents.get(str(frame_id)) or "")
+
     def _wait_for_route(self, frame_id: str, *, timeout: float = 1.5) -> Dict[str, Any]:
         deadline = time.monotonic() + max(0.05, timeout)
         while time.monotonic() < deadline:
@@ -497,6 +521,8 @@ class FlatCdpTargetRegistry:
             if not child_frame_id:
                 raise LookupError(f"CDP frameId is unavailable at {selector}")
             self._wait_for_route(child_frame_id, timeout=2.0)
+            with self._lock:
+                self._frame_parents[child_frame_id] = str(frame_id)
             return child_frame_id
         finally:
             try:
@@ -614,6 +640,31 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
             raise RuntimeError("Active SeleniumBase CDP target id is unavailable")
         return value
 
+    def add_init_script(self, script: str) -> Dict[str, Any]:
+        """Register the init script on the navigation-surviving root session.
+
+        SeleniumBase's own active-tab session is dropped and re-created by queue
+        redirects / CDP session recovery, which also discards the
+        Page.addScriptToEvaluateOnNewDocument registration. The page then falls
+        back to the real hardware fingerprint while workers stay spoofed.
+        Registering through the OOPIF registry's properly initialized root
+        session keeps the script bound to the target across navigations and
+        session rebuilds.
+        """
+        source = str(script or "")
+        if not source.strip():
+            return {"result": False}
+        if str(base.os.environ.get("ARES_DISABLE_OOPIF_INIT_SCRIPT") or "").strip() == "1":
+            return super().add_init_script(source)
+        registry = getattr(self, "_oopif_registry", None)
+        if registry is not None:
+            try:
+                if registry.inject_init_script(self._active_target_id(), source):
+                    return {"result": True, "identifier": "oopif-root"}
+            except Exception:
+                pass
+        return super().add_init_script(source)
+
     def _execute_script_in_frame_path(self, frame_path: Iterable[str], script: str, args: Iterable[Any]) -> Any:
         path = [str(value) for value in frame_path if str(value)]
         if not path:
@@ -635,6 +686,509 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
             include_offsets=True,
         )
         return x, y
+
+    def _resolve_native_node(
+        self,
+        locator: Dict[str, Any],
+        selector: str,
+        nth: int,
+        text_spec: Dict[str, str] | None,
+    ) -> tuple[int, str]:
+        if not selector:
+            raise ValueError("locator selector is empty")
+        if text_spec and text_spec.get("source") is not None:
+            raise LookupError("text-filtered locator requires the JS path")
+        path = [str(value) for value in locator.get("framePath") or [] if str(value)]
+        frame_id, _, _ = self._oopif_registry.resolve_path(
+            self._active_target_id(),
+            path,
+            include_offsets=False,
+        )
+        route = self._oopif_registry._wait_for_route(frame_id)
+        session_id = str(route["sessionId"])
+        # A same-process child frame shares its parent's CDP session, so the
+        # session document is the parent. Resolve the child frame's own
+        # contentDocument root before querying, otherwise fields inside the
+        # credit-card iframe are never found.
+        root_node_id = self._document_root_for_frame(session_id, frame_id)
+        if root_node_id <= 0:
+            document = self._oopif_registry.call(
+                "DOM.getDocument",
+                {"depth": 0, "pierce": True},
+                session_id=session_id,
+            )
+            root = document.get("root") if isinstance(document.get("root"), dict) else {}
+            root_node_id = int(root.get("nodeId") or 0)
+        if root_node_id <= 0:
+            raise RuntimeError("DOM root node is unavailable")
+        if isinstance(nth, int) and nth >= 0:
+            found = self._oopif_registry.call(
+                "DOM.querySelectorAll",
+                {"nodeId": root_node_id, "selector": selector},
+                session_id=session_id,
+            )
+            node_ids = found.get("nodeIds") if isinstance(found.get("nodeIds"), list) else []
+            node_id = int(node_ids[nth]) if nth < len(node_ids) else 0
+        else:
+            found = self._oopif_registry.call(
+                "DOM.querySelector",
+                {"nodeId": root_node_id, "selector": selector},
+                session_id=session_id,
+            )
+            node_id = int(found.get("nodeId") or 0)
+        if node_id <= 0:
+            # Read-only fallback: resolve the node through the frame's own
+            # execution context, then convert the remote object to a native
+            # nodeId. Focus/typing stay native; only the lookup uses JS.
+            try:
+                selector_json = base.json.dumps(selector, ensure_ascii=False)
+                response = self._oopif_registry._evaluate_expression(
+                    frame_id,
+                    f"document.querySelector({selector_json})",
+                    return_by_value=False,
+                )
+                remote = response.get("result") if isinstance(response.get("result"), dict) else {}
+                object_id = str(remote.get("objectId") or "")
+                if object_id:
+                    node_result = self._oopif_registry.call(
+                        "DOM.requestNode",
+                        {"objectId": object_id},
+                        session_id=session_id,
+                    )
+                    node_id = int(node_result.get("nodeId") or 0)
+            except Exception:
+                node_id = 0
+        self._wheel_log(
+            f"native-node path={path} frame={str(frame_id)[:8]} root={root_node_id} "
+            f"selector={selector} found={node_id}"
+        )
+        if node_id <= 0:
+            raise LookupError(f"No element matched locator: {selector}")
+        return node_id, session_id
+
+    def _locator_op(self, action: str, locator: Dict[str, Any], command: Dict[str, Any]) -> Any:
+        # Native, smooth scroll through CDP mouseWheel ticks. No JavaScript and
+        # no instant jump: only scrolls when the field is outside the viewport,
+        # then moves in small wheel steps like a human.
+        if action == "scroll-into-view":
+            try:
+                selector = str(locator.get("selector") or "")
+                nth = int(locator.get("nth")) if isinstance(locator.get("nth"), (int, float)) else -1
+                text_spec = base.pattern_payload(locator.get("hasText"))
+                node_id, session_id = self._resolve_native_node(locator, selector, nth, text_spec)
+                # Native engine scroll only. The custom momentum scroll fought
+                # the checkout's own focus handler and produced visible jumps;
+                # the native path is what Playwright/Puppeteer use and is the
+                # most reliable option.
+                self._oopif_registry.call(
+                    "DOM.scrollIntoViewIfNeeded",
+                    {"nodeId": node_id},
+                    session_id=session_id,
+                )
+                return True
+            except Exception:
+                return super()._locator_op(action, locator, command)
+        return super()._locator_op(action, locator, command)
+
+    def _wheel_log(self, message: str) -> None:
+        # Debug hook retained for local tracing; intentionally silent.
+        return
+
+    def _document_scroll_y(self) -> float:
+        """Read the main document's scroll offset through CDP only (no JS)."""
+        try:
+            root_frame = self._oopif_registry.ensure_target(self._active_target_id())
+            route = self._oopif_registry._wait_for_route(root_frame)
+            session_id = str(route["sessionId"])
+            metrics = self._oopif_registry.call("Page.getLayoutMetrics", {}, session_id=session_id)
+        except Exception:
+            return 0.0
+        for key in ("visualViewport", "cssLayoutViewport"):
+            viewport = metrics.get(key)
+            if isinstance(viewport, dict):
+                try:
+                    return float(viewport.get("pageY") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    def _frame_parent_map(self) -> Dict[str, str]:
+        """Build a global child->parent frame map from every session's tree.
+
+        Page.frameAttached events are not guaranteed for frames that were
+        created before Page.enable reached their session, which left nested
+        OOPIF offsets incomplete (a nested payment field measured as
+        permanently off-screen). Walking Page.getFrameTree on each live session
+        reconstructs the full chain for same-process and OOPIF frames alike.
+        """
+        parents: Dict[str, str] = {}
+        sessions = getattr(self._oopif_registry, "_sessions", None)
+        if not isinstance(sessions, dict):
+            return parents
+        for session_id in list(sessions.keys()):
+            try:
+                tree = self._oopif_registry.call(
+                    "Page.getFrameTree",
+                    {},
+                    session_id=str(session_id),
+                    timeout=1.0,
+                )
+            except Exception:
+                continue
+            stack = [tree.get("frameTree")] if isinstance(tree.get("frameTree"), dict) else []
+            while stack:
+                node = stack.pop()
+                if not isinstance(node, dict):
+                    continue
+                frame = node.get("frame") if isinstance(node.get("frame"), dict) else {}
+                frame_id = str(frame.get("id") or "")
+                parent_id = str(frame.get("parentId") or "")
+                if frame_id and parent_id:
+                    parents.setdefault(frame_id, parent_id)
+                for child in node.get("childFrames") or []:
+                    if isinstance(child, dict):
+                        stack.append(child)
+        return parents
+
+    def _frame_offset_in_main(self, field_frame_id: str) -> tuple[float, float]:
+        """Accumulate iframe offsets up the frame tree, natively.
+
+        Page.getFrameTree builds the parent map, then DOM.getFrameOwner +
+        DOM.getContentQuads run on each parent frame session. Both the field
+        quads and the owner quads are viewport-relative, so the accumulated
+        offset is in the main viewport's coordinate space (DOM.getBoxModel
+        returns document coordinates and made iframe fields measure as
+        permanently off-screen). No page JavaScript and no scroll side effects.
+        """
+        root_frame = self._oopif_registry.ensure_target(self._active_target_id())
+        parents = self._frame_parent_map()
+        self._wheel_log(
+            f"parent-map size={len(parents)} field={str(field_frame_id)[:8]} root={str(root_frame)[:8]}"
+        )
+        offset_x = 0.0
+        offset_y = 0.0
+        current = str(field_frame_id)
+        guard = 0
+        while current and current != root_frame and guard < 12:
+            parent_frame = parents.get(current) or self._oopif_registry.frame_parent(current)
+            self._wheel_log(f"chain {current[:8]} -> {str(parent_frame)[:8] if parent_frame else '-'}")
+            if not parent_frame:
+                self._wheel_log(f"no-parent frame={current[:8]}")
+                break
+            parent_route = self._oopif_registry._wait_for_route(parent_frame)
+            parent_session = str(parent_route["sessionId"])
+            owner = self._oopif_registry.call(
+                "DOM.getFrameOwner",
+                {"frameId": current},
+                session_id=parent_session,
+            )
+            owner_node = int(owner.get("nodeId") or 0)
+            if owner_node <= 0:
+                # Cross-process (OOPIF) frame owners are not always resolvable
+                # through the DOM domain. Locate the hosting iframe element by
+                # matching its frameId instead.
+                owner_node = self._find_iframe_node_by_frame_id(parent_session, current)
+            if owner_node <= 0:
+                self._wheel_log(f"no-owner frame={current[:8]} parent={parent_frame[:8]}")
+                break
+            quads_reply = self._oopif_registry.call(
+                "DOM.getContentQuads",
+                {"nodeId": owner_node},
+                session_id=parent_session,
+            )
+            quads = quads_reply.get("quads") if isinstance(quads_reply.get("quads"), list) else []
+            if not quads or not isinstance(quads[0], list) or len(quads[0]) < 8:
+                self._wheel_log(f"no-box frame={current[:8]}")
+                break
+            quad = [float(value) for value in quads[0][:8]]
+            bxs = quad[0::2]
+            bys = quad[1::2]
+            offset_x += min(bxs)
+            offset_y += min(bys)
+            current = parent_frame
+            guard += 1
+        return offset_x, offset_y
+
+    def _find_iframe_node_by_frame_id(self, session_id: str, frame_id: str) -> int:
+        """Find the hosting <iframe>/<frame> node for a child frame, natively."""
+        try:
+            document = self._oopif_registry.call(
+                "DOM.getDocument",
+                {"depth": 0, "pierce": False},
+                session_id=session_id,
+            )
+            root = document.get("root") if isinstance(document.get("root"), dict) else {}
+            root_node = int(root.get("nodeId") or 0)
+            if root_node <= 0:
+                return 0
+            found = self._oopif_registry.call(
+                "DOM.querySelectorAll",
+                {"nodeId": root_node, "selector": "iframe,frame"},
+                session_id=session_id,
+            )
+            node_ids = found.get("nodeIds") if isinstance(found.get("nodeIds"), list) else []
+            for raw_node in node_ids:
+                node_id = int(raw_node)
+                described = self._oopif_registry.call(
+                    "DOM.describeNode",
+                    {"nodeId": node_id},
+                    session_id=session_id,
+                )
+                node = described.get("node") if isinstance(described.get("node"), dict) else {}
+                if str(node.get("frameId") or "") == str(frame_id):
+                    return node_id
+        except Exception:
+            return 0
+        return 0
+
+    def _document_root_for_frame(self, session_id: str, frame_id: str) -> int:
+        """Return the contentDocument root node for a child frame, natively.
+
+        Same-process child frames share the parent's session, so their nodes are
+        not reachable from the session's own document root.
+        """
+        for attempt in range(4):
+            try:
+                owner = self._oopif_registry.call(
+                    "DOM.getFrameOwner",
+                    {"frameId": frame_id},
+                    session_id=session_id,
+                )
+                owner_node = int(owner.get("nodeId") or 0)
+                if owner_node > 0:
+                    described = self._oopif_registry.call(
+                        "DOM.describeNode",
+                        {"nodeId": owner_node, "depth": 1, "pierce": True},
+                        session_id=session_id,
+                    )
+                    node = described.get("node") if isinstance(described.get("node"), dict) else {}
+                    content = node.get("contentDocument")
+                    if isinstance(content, dict):
+                        return int(content.get("nodeId") or 0)
+            except Exception:
+                pass
+            if attempt < 3:
+                time.sleep(0.2 * (attempt + 1))
+        return 0
+
+    def _smooth_scroll_into_view(self, node_id: int, session_id: str, frame_path: List[str]) -> bool:
+        """Wheel-scroll so the node becomes visible, using native CDP mouseWheel.
+
+        DOM.getContentQuads returns frame-local coordinates, so the owning
+        frame's offset inside the main viewport is added first. The wheel is
+        dispatched on the root session at the element's main-frame position.
+        Geometry is re-measured after each scroll because the browser rarely
+        scrolls exactly by the requested amount.
+
+        Returns False when geometry cannot be resolved (caller falls back to
+        DOM.scrollIntoViewIfNeeded).
+        """
+        try:
+            root_frame = self._oopif_registry.ensure_target(self._active_target_id())
+            root_route = self._oopif_registry._wait_for_route(root_frame)
+            root_session = str(root_route["sessionId"])
+            metrics = self._oopif_registry.call("Page.getLayoutMetrics", {}, session_id=root_session)
+            viewport = metrics.get("visualViewport") if isinstance(metrics.get("visualViewport"), dict) else {}
+            if not viewport:
+                viewport = metrics.get("cssLayoutViewport") if isinstance(metrics.get("cssLayoutViewport"), dict) else {}
+            width = float(viewport.get("clientWidth") or 0.0)
+            height = float(viewport.get("clientHeight") or 0.0)
+            if width <= 0 or height <= 0:
+                self._wheel_log("no-viewport")
+                return False
+
+            field_frame, _, _ = self._oopif_registry.resolve_path(
+                self._active_target_id(),
+                frame_path,
+                include_offsets=False,
+            )
+
+            for attempt in range(8):
+                # Re-read the scroll offset every attempt: DOM.getBoxModel and
+                # getContentQuads report document coordinates, and the page
+                # scroll changes after each wheel event.
+                scroll_y = self._document_scroll_y()
+                # The frame offset must be re-measured after every scroll: the
+                # iframe's position in the main viewport moves with the page, so
+                # a cached offset made nested fields measure as permanently
+                # off-screen and the wheel scrolled to the bottom in vain.
+                offset_x, offset_y = self._frame_offset_in_main(field_frame)
+                self._wheel_log(f"frame={str(field_frame)[:8]} off=({offset_x:.0f},{offset_y:.0f}) vh={height:.0f}")
+                quads_reply = self._oopif_registry.call(
+                    "DOM.getContentQuads",
+                    {"nodeId": node_id},
+                    session_id=session_id,
+                )
+                quads = quads_reply.get("quads") if isinstance(quads_reply.get("quads"), list) else []
+                if not quads or not isinstance(quads[0], list) or len(quads[0]) < 8:
+                    self._wheel_log("no-quads")
+                    return False
+                quad = [float(value) for value in quads[0][:8]]
+                xs = quad[0::2]
+                ys = quad[1::2]
+                # DOM.getContentQuads already reports viewport coordinates (like
+                # getBoundingClientRect); adding the frame offset yields
+                # main-viewport coordinates. Subtracting window.scrollY here
+                # double-counted the scroll and made the wheel oscillate
+                # (overshoot, correct, overshoot again).
+                top = offset_y + min(ys)
+                bottom = offset_y + max(ys)
+                center_x = offset_x + (sum(xs) / len(xs))
+                # Generous margin so the wheel scrolls the field well inside the
+                # viewport and DOM.focus afterwards cannot move it again.
+                margin = 110.0
+                below = bottom > height - margin
+                above = top < margin
+                self._wheel_log(
+                    f"try{attempt} scrollY={scroll_y:.0f} "
+                    f"top={top:.0f} bottom={bottom:.0f} below={below} above={above}"
+                )
+                if not below and not above:
+                    return True
+                # Center the field in the viewport. DOM.focus does not move an
+                # element that is already fully visible, so a centered target
+                # removes the follow-up focus jump entirely.
+                scroll_amount = ((top + bottom) / 2.0) - (height / 2.0)
+                # Fields already essentially centered are left alone; the tiny
+                # correction is not worth a visible scroll.
+                if abs(scroll_amount) < 40:
+                    return True
+                # A person scrolls in short flicks, not one long fling: cap each
+                # gesture and let the loop cover the remaining distance with a
+                # short pause in between.
+                max_step = base.random.uniform(550.0, 900.0)
+                if abs(scroll_amount) > max_step:
+                    scroll_amount = max_step if scroll_amount > 0 else -max_step
+                # Native wheel events over the main-page margin (x=10) at the
+                # viewport center: reliably over the main page, unlike the
+                # element position which can sit on a non-scrolling footer.
+                wheel_x = 10.0
+                wheel_y = height * 0.5
+                self._wheel_log(
+                    f"wheel scroll={scroll_amount:.0f} x={wheel_x:.0f} y={wheel_y:.0f}"
+                )
+                input_domain = getattr(base, "mycdp", None)
+                dispatch = getattr(getattr(input_domain, "input_", None), "dispatch_mouse_event", None)
+                if not callable(dispatch):
+                    self._wheel_log("no-dispatch")
+                    return False
+                tab = self.sb.get_active_tab()
+                loop = self.sb.get_event_loop()
+                # Preferred: momentum scroll through Input.synthesizeScrollGesture
+                # (mouse source). Real input accelerates, glides and settles, so
+                # wheel deltas vary naturally instead of arriving on a fixed
+                # rhythm. Falls back to the irregular wheel ticks when the
+                # gesture is unavailable or the document did not move.
+                if self._synthesize_scroll_gesture(tab, loop, wheel_x, wheel_y, scroll_amount, scroll_y):
+                    continue
+                # Irregular human wheel: random chunk sizes and pauses instead
+                # of a fixed rhythm.
+                # Small, irregular wheel chunks so the movement is visible and
+                # human-like instead of one instant jump.
+                self._wheel_diag(f"wheel-fallback amount={scroll_amount:.0f}")
+                remaining = scroll_amount
+                guard = 0
+                while abs(remaining) > 4 and guard < 30:
+                    chunk = min(abs(remaining), base.random.uniform(70.0, 170.0))
+                    if remaining < 0:
+                        chunk = -chunk
+                    chunk = int(chunk) or (1 if chunk > 0 else -1)
+                    loop.run_until_complete(tab.send(dispatch(
+                        type_="mouseWheel",
+                        x=wheel_x,
+                        y=wheel_y,
+                        delta_x=0,
+                        delta_y=chunk,
+                        modifiers=0,
+                    )))
+                    remaining -= chunk
+                    guard += 1
+                    time.sleep(base.random.uniform(0.04, 0.13))
+                time.sleep(0.2)
+            return True
+        except Exception as exc:
+            self._wheel_log(f"error={type(exc).__name__}:{str(exc)[:200]}")
+            return False
+
+    def _synthesize_scroll_gesture(
+        self,
+        tab: Any,
+        loop: Any,
+        x: float,
+        y: float,
+        amount: float,
+        before_scroll_y: float,
+    ) -> bool:
+        """Momentum scroll via CDP Input.synthesizeScrollGesture (mouse source).
+
+        Real input accelerates, glides and settles, so wheel deltas vary
+        naturally instead of arriving on a fixed rhythm. Returns True only when
+        the gesture was accepted and the document actually moved, so the caller
+        can fall back to the deterministic random wheel ticks otherwise.
+        """
+        try:
+            from mycdp import input_ as cdp_input
+        except Exception:
+            return False
+        synthesize = getattr(cdp_input, "synthesize_scroll_gesture", None)
+        if not callable(synthesize):
+            return False
+        speed = int(base.random.uniform(450.0, 950.0))
+        try:
+            loop.run_until_complete(tab.send(synthesize(
+                x=float(x),
+                y=float(y),
+                # yDistance is positive to scroll up; `amount` is positive down.
+                y_distance=-float(amount),
+                # No fling: momentum kept overshooting the field and DOM.focus
+                # then snapped back, which looked like a jump. The gesture still
+                # accelerates/decelerates, so the wheel deltas stay varied.
+                prevent_fling=True,
+                speed=speed,
+                gesture_source_type=cdp_input.GestureSourceType.MOUSE,
+            )))
+        except Exception as exc:
+            self._wheel_diag(f"synthesize-failed {type(exc).__name__}:{str(exc)[:140]}")
+            return False
+        time.sleep(base.random.uniform(0.12, 0.28))
+        after_scroll_y = self._document_scroll_y()
+        moved = abs(after_scroll_y - float(before_scroll_y)) >= 4.0
+        self._wheel_diag(
+            f"synthesize-{'ok' if moved else 'no-move'} amount={amount:.0f} speed={speed} "
+            f"scrollY={before_scroll_y:.0f}->{after_scroll_y:.0f}"
+        )
+        return moved
+
+    @staticmethod
+    def _wheel_diag(message: str) -> None:
+        try:
+            import os
+            import tempfile
+
+            path = os.path.join(tempfile.gettempdir(), "ares-wheel-diag.log")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{base.time.time():.3f} {message}\n")
+        except Exception:
+            pass
+    def _native_focus_locator(
+        self,
+        locator: Dict[str, Any],
+        selector: str,
+        nth: int,
+        text_spec: Dict[str, str] | None,
+    ) -> None:
+        """Focus through the CDP DOM domain.
+
+        DOM.focus is frame-local and reliably targets the intended field, unlike
+        viewport-coordinate clicks inside the tall checkout iframe. The engine
+        scrolls with DOM.scrollIntoViewIfNeeded first, so focus does not move.
+        """
+        try:
+            node_id, session_id = self._resolve_native_node(locator, selector, nth, text_spec)
+            self._oopif_registry.call("DOM.focus", {"nodeId": node_id}, session_id=session_id)
+        except Exception as exc:
+            self._wheel_log(f"focus-fallback selector={selector} err={type(exc).__name__}:{str(exc)[:160]}")
+            super()._native_focus_locator(locator, selector, nth, text_spec)
 
     def _discover_frame_tree(self) -> List[Dict[str, Any]]:
         try:

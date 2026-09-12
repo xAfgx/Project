@@ -14,4 +14,12 @@ coverage/
 *.db
 logs/
 browser-profiles/
-node_modules/  .env  dist/  build/ 
+node_modules/  .env  dist/  build/
+
+# Python/UI local artifacts
+__pycache__/
+*.pyc
+_backup_*/
+
+# Local offline test pages / fixtures
+pokemon-center-test/

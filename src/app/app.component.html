@@ -1,16 +1,118 @@
-<div class="app-shell">
+<div class="app-shell" style="background-image: url('assets/ares-bg.png')">
+  <div class="particles-layer" aria-hidden="true">
+    <div [id]="particlesId + '-meteors'" class="particles-canvas"></div>
+  </div>
+  <ng-template #composerBody>
+<div class="composer-body">
+            <div class="segmented" *ngIf="activeTab !== 'modules'">
+              <button [class.active]="monitorStrategyMode === 'product-monitor'" (click)="setMonitorStrategy('product-monitor')">Product monitor</button>
+              <button [class.active]="monitorStrategyMode === 'early-gate'" (click)="setMonitorStrategy('early-gate')">Early gate</button>
+            </div>
+
+            <div class="segmented secondary" *ngIf="activeTab !== 'modules' && monitorStrategyMode === 'product-monitor'">
+              <button [class.active]="taskMode === 'monitor-only'" (click)="taskMode = 'monitor-only'">Monitor only</button>
+              <button [class.active]="taskMode === 'auto-checkout'" (click)="taskMode = 'auto-checkout'">Auto checkout</button>
+            </div>
+
+            <app-monitor-runtime-preload *ngIf="monitorStrategyMode === 'product-monitor'"></app-monitor-runtime-preload>
+
+            <span class="builder-section">Ziel &amp; Produkt</span>
+            <div class="form-grid compact">
+              <label><span>Name</span><input [(ngModel)]="taskName" placeholder="Pokemon Drop"></label>
+              <label><span>Shop</span><select [(ngModel)]="selectedShopId" (ngModelChange)="onShopSelected()"><option value="">Select shop</option><option *ngFor="let shop of composerShopOptions; trackBy: trackShop" [value]="shop.id">{{ shop.name }}</option></select></label>
+              <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor'"><span>Product / keyword / URL</span><input [(ngModel)]="searchTerm" placeholder="Pokemon 151 Booster Bundle"></label>
+              <label class="span-2" *ngIf="monitorStrategyMode === 'early-gate'"><span>Product name</span><input [(ngModel)]="earlyGateProductName" placeholder="Elite Trainer Box"></label>
+              <label><span>Interval</span><div class="input-unit"><input [(ngModel)]="taskIntervalSeconds" type="number" min="1"><b>sec</b></div></label>
+            </div>
+
+            <span class="builder-section">Identität &amp; Netzwerk</span>
+            <div class="form-grid compact">
+              <label *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><span>{{ taskNeedsCheckoutSession ? 'Profile' : 'Runtime profile (optional)' }}</span><select [(ngModel)]="selectedProfileId" (ngModelChange)="syncProfileDefaults()"><option value="">{{ taskNeedsCheckoutSession ? 'Select profile' : 'No runtime profile' }}</option><option *ngFor="let profile of profiles" [value]="profile.id">{{ profile.name }}</option></select></label>
+              <label *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><span>Proxy route</span><select [(ngModel)]="taskProxyMode"><option value="profile-default">{{ selectedProfileId ? 'Profile default' : 'Direct default' }}</option><option value="direct">Direct</option><option value="proxy">Specific proxy</option></select></label>
+              <label *ngIf="(taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor') && taskProxyMode === 'proxy'"><span>Proxy</span><select [(ngModel)]="selectedTaskProxyId"><option value="">Select proxy</option><option *ngFor="let proxy of proxies; trackBy: trackProxy" [value]="proxy.id">{{ proxy.name }}</option></select></label>
+              <label class="toggle" *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><input type="checkbox" [(ngModel)]="headless"><span>Headless browser fallback</span></label>
+            </div>
+
+            <div class="keyword-line" *ngIf="monitorStrategyMode === 'early-gate'">
+              <div class="chips"><span *ngFor="let keyword of discoveryKeywords">{{ keyword }}<button (click)="removeDiscoveryKeyword(keyword)">×</button></span></div>
+              <div class="keyword-add"><input [(ngModel)]="newDiscoveryKeyword" (keyup.enter)="addDiscoveryKeyword()" placeholder="Discovery keyword"><button class="ghost" (click)="addDiscoveryKeyword()">Add</button></div>
+            </div>
+
+            <app-profile-cookie-snapshots *ngIf="taskNeedsCheckoutSession" [profileId]="selectedProfileId" mode="select"></app-profile-cookie-snapshots>
+
+            <div class="composer-actions"><small *ngIf="taskNeedsCheckoutSession">Profile vault + runtime isolation; no card data is stored in the task.</small><small *ngIf="monitorStrategyMode === 'product-monitor' && !taskNeedsCheckoutSession">HTTP fast path; Chromium + full runtime only when HTML is empty or ambiguous.</small><button class="primary" (click)="createTask()">Create task</button></div>
+          </div>
+        </ng-template>
+
+  <ng-template #moduleLogo let-moduleId="moduleId">
+    <svg *ngIf="moduleId === 'pokemon-center'" viewBox="0 0 48 48" aria-hidden="true">
+      <circle cx="24" cy="24" r="21" fill="#f4f6ff"/>
+      <path d="M3 24a21 21 0 0 1 42 0Z" fill="#e60012"/>
+      <rect x="3" y="22" width="42" height="4" fill="#0b0f1f"/>
+      <circle cx="24" cy="24" r="7.5" fill="#0b0f1f"/>
+      <circle cx="24" cy="24" r="4.4" fill="#f4f6ff"/>
+    </svg>
+    <svg *ngIf="moduleId === 'shopify'" viewBox="0 0 48 48" aria-hidden="true">
+      <path d="M33.6 7.9c-.6-.4-1.4-.5-2.1-.3-.3-1-.9-2-1.8-2.7-.9-.8-2-1.1-3-.9-1 .2-2 1-2.7 2-.9 1.3-1.5 3-1.8 4.4l-3.1 1c-1 .3-1.1.4-1.2 1.4L14 41.4 33.9 45l.4-36.7c0-.1-.2-.3-.7-.4Z" fill="#95bf47"/>
+      <path d="M31.8 7.6c-1 .3-2.2.7-3.3 1 .4-1.3 1-2.5 1.7-3.3.5-.5 1.1-.9 1.6-.9.1.9.1 2 0 3.2Z" fill="#5e8e3e"/>
+      <path d="M27 17.5l-1 3.2s-.9-.5-2-.4c-1.6.1-1.6 1.1-1.6 1.4 0 1.5 3.9 1.8 3.9 5 0 2.5-1.6 4.1-3.7 4.2-2.7.1-4.1-1.4-4.1-1.4l.6-1.9s1.4 1 2.5 1c.7 0 1-.6 1-1 0-2-3.1-1.9-3.1-4.8 0-2.4 1.8-4.9 5.4-5.1 1.4-.1 2.1.3 2.1.3Z" fill="#fff"/>
+    </svg>
+  </ng-template>
+
+  <ng-template #taskList let-taskItems="taskItems" let-emptyText="emptyText">
+<section class="task-table surface">
+          <div class="table-head"><span>Task</span><span>Route</span><span>Status</span><span>Retries</span><span>Controls</span></div>
+          <div class="empty" *ngIf="!taskItems.length">{{ emptyText }}</div>
+
+          <div class="task-list-reversed">
+            <article class="task-item" *ngFor="let task of taskItems; trackBy: trackTask">
+              <div class="task-main">
+                <i [class.active]="isPausable(task)" [class.paused]="isResumable(task)"></i>
+                <div><strong>{{ task.config.name }}</strong><small>{{ getTaskKind(task) }} · {{ task.config.shopId || 'No shop' }}</small></div>
+              </div>
+              <div class="route"><strong>{{ getTaskProfileName(task) }}</strong><small>{{ getTaskProxyStatus(task) }}</small></div>
+              <span class="state" [ngClass]="task.state.toLowerCase()">{{ task.state }}</span>
+              <span class="retry">{{ task.retries ?? 0 }} / {{ task.maxRetries ?? 0 }}</span>
+              <div class="row-actions">
+                <button *ngIf="isStartable(task)" class="icon primary-icon" title="Start task" (click)="startTask(task.id)">▶</button>
+                <button *ngIf="isPausable(task)" class="icon" title="Pause task" (click)="pauseTask(task.id)">Ⅱ</button>
+                <button *ngIf="isResumable(task)" class="icon primary-icon" title="Resume task" (click)="resumeTask(task.id)">▶</button>
+                <button *ngIf="isStoppable(task)" class="icon danger-icon" title="Stop task" (click)="stopTask(task.id)">■</button>
+                <button *ngIf="isRestartable(task)" class="icon primary-icon" title="Neu starten" (click)="restartTask(task.id)">↻</button>
+                <button class="icon danger-icon" title="Task löschen" (click)="deleteTask(task.id)">×</button>
+                <button class="icon" title="Logs" (click)="toggleTaskLogs(task.id)">···</button>
+              </div>
+
+              <div class="task-wide" *ngIf="isAutoCheckoutTask(task) || isEarlyGateFlowTask(task) || task.lastError">
+                <span *ngIf="isAutoCheckoutTask(task)"><b>Automation</b> {{ getTaskAutomationStatus(task) }}</span>
+                <span *ngIf="isEarlyGateFlowTask(task)"><b>Area</b> {{ getActiveArea(task) }}</span>
+                <span class="err" *ngIf="task.lastError">{{ task.lastError }}</span>
+              </div>
+
+              <div class="task-logs" *ngIf="expandedTaskLogId === task.id">
+                <div class="log-top"><strong>Runtime log</strong><button class="ghost" (click)="loadTaskLogs(task.id)">Refresh</button></div>
+                <div class="empty" *ngIf="!taskLogs[task.id] || !taskLogs[task.id].length">No log entries.</div>
+                <div class="log-line" *ngFor="let log of taskLogs[task.id]" [class.warn]="log.level === 'warn'" [class.error]="log.level === 'error'"><time>{{ log.createdAt | date:'HH:mm:ss' }}</time><b>{{ log.event }}</b><span>{{ log.message }}</span></div>
+              </div>
+            </article>
+          </div>
+        </section>
+  </ng-template>
+
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">A</div>
+      <div class="brand-mark"><img src="assets/ares-logo.png" alt="ARES"></div>
       <div><strong>ARES</strong><span>commerce engine</span></div>
     </div>
 
     <nav class="nav" aria-label="ARES Navigation">
       <button [class.active]="activeTab === 'dashboard'" (click)="setTab('dashboard')"><span>⌂</span><b>Overview</b></button>
+      <button [class.active]="activeTab === 'modules'" (click)="setTab('modules')"><span>◈</span><b>Modules</b><em>{{ modules.length }}</em></button>
       <button [class.active]="activeTab === 'tasks'" (click)="setTab('tasks')"><span>▶</span><b>Tasks</b><em>{{ tasks.length }}</em></button>
       <button [class.active]="activeTab === 'profiles'" (click)="setTab('profiles')"><span>◉</span><b>Profiles</b><em>{{ profiles.length }}</em></button>
       <button [class.active]="activeTab === 'proxies'" (click)="setTab('proxies')"><span>↗</span><b>Proxies</b><em>{{ proxies.length }}</em></button>
       <button [class.active]="activeTab === 'shops'" (click)="setTab('shops')"><span>◇</span><b>Shops</b><em>{{ shops.length }}</em></button>
+      <button [class.active]="activeTab === 'captchas'" (click)="setTab('captchas')"><span>⛨</span><b>Captchas</b></button>
     </nav>
 
     <div class="sidebar-foot">
@@ -87,9 +189,68 @@
         </details>
       </ng-container>
 
+      <ng-container *ngIf="activeTab === 'modules'">
+        <section class="page-head">
+          <div><span class="kicker">RETAILER MODULES</span><h2>Modules</h2><p>Modul wählen, Task-Modus wählen – alle bekannten Einstellungen bleiben erhalten.</p></div>
+          <div class="page-head-actions" *ngIf="selectedModule">
+            <button class="ghost" (click)="closeModule()">← Alle Module</button>
+          </div>
+        </section>
+
+        <section class="module-grid" *ngIf="!selectedModule">
+          <button type="button" class="module-card" *ngFor="let module of modules" [style.--module-accent]="module.accent" (click)="openModule(module.id)">
+            <span class="module-logo"><ng-container *ngTemplateOutlet="moduleLogo; context: { moduleId: module.id }"></ng-container></span>
+            <span class="module-info"><b>{{ module.name }}</b><small>{{ module.tagline }}</small></span>
+            <span class="module-meta"><em>{{ module.modes.length }} Modus{{ module.modes.length === 1 ? '' : 'e' }}</em><i class="module-meteor"></i></span>
+          </button>
+        </section>
+
+        <section class="module-detail" *ngIf="selectedModule">
+          <header class="module-hero" [style.--module-accent]="selectedModule.accent">
+
+            <span class="module-logo xl"><ng-container *ngTemplateOutlet="moduleLogo; context: { moduleId: selectedModule.id }"></ng-container></span>
+            <div class="module-hero-text">
+              <span class="kicker">MODULE</span>
+              <h2>{{ selectedModule.name }}</h2>
+              <small>{{ selectedModule.tagline }}</small>
+            </div>
+            <div class="module-hero-actions">
+              <span class="head-chip">{{ moduleTasks.length }} Tasks</span>
+              <button class="ghost" (click)="closeModule()">← Alle Module</button>
+            </div>
+          </header>
+
+          <div class="module-step">
+            <span class="module-step-label">1 · Ablauf wählen</span>
+            <div class="module-modes">
+              <button type="button" class="module-mode" *ngFor="let mode of selectedModule.modes" [class.active]="moduleMode === mode.id" (click)="selectModuleMode(mode.id)">
+                <span class="module-mode-flow">
+                  <ng-container *ngIf="mode.id === 'direct'"><em>Produkt</em><i>→</i><em>Warenkorb</em><i>→</i><em>Checkout</em></ng-container>
+                  <ng-container *ngIf="mode.id === 'early-gate'"><em>Queue</em><i>→</i><em>Release</em><i>→</i><em>Checkout</em></ng-container>
+                </span>
+                <b>{{ mode.label }}</b>
+                <small>{{ mode.hint }}</small>
+              </button>
+            </div>
+          </div>
+
+          <div class="module-step">
+            <span class="module-step-label">2 · Task konfigurieren</span>
+            <div class="module-builder surface">
+              <ng-container *ngTemplateOutlet="composerBody"></ng-container>
+            </div>
+          </div>
+
+          <div class="module-step">
+            <span class="module-step-label">3 · Tasks dieses Moduls</span>
+            <ng-container *ngTemplateOutlet="taskList; context: { taskItems: moduleTasks, emptyText: 'Noch keine Tasks für dieses Modul.' }"></ng-container>
+          </div>
+        </section>
+      </ng-container>
+
       <ng-container *ngIf="activeTab === 'tasks'">
         <section class="page-head">
-          <div><span class="kicker">TASK CONTROL</span><h2>Tasks</h2><p>Einzelne Jobs starten, pausieren, fortsetzen oder stoppen.</p></div>
+          <div><span class="kicker">CONTROL ROOM</span><h2>Alle Tasks</h2><p>Globale Steuerung über alle Module. Neue Tasks entstehen in <b>Modules</b>.</p></div>
           <div class="page-head-actions">
             <a class="head-chip">{{ activeTaskCount }} active</a>
             <button class="primary" [disabled]="bulkStarting || !bulkRunnableCount" (click)="startAllTasks()">
@@ -101,81 +262,7 @@
           </div>
         </section>
 
-        <details class="composer surface" open>
-          <summary><div><span class="kicker">NEW TASK</span><strong>Create task</strong></div><span>＋</span></summary>
-          <div class="composer-body">
-            <div class="segmented">
-              <button [class.active]="monitorStrategyMode === 'product-monitor'" (click)="setMonitorStrategy('product-monitor')">Product monitor</button>
-              <button [class.active]="monitorStrategyMode === 'early-gate'" (click)="setMonitorStrategy('early-gate')">Early gate</button>
-            </div>
-
-            <div class="segmented secondary" *ngIf="monitorStrategyMode === 'product-monitor'">
-              <button [class.active]="taskMode === 'monitor-only'" (click)="taskMode = 'monitor-only'">Monitor only</button>
-              <button [class.active]="taskMode === 'auto-checkout'" (click)="taskMode = 'auto-checkout'">Auto checkout</button>
-            </div>
-
-            <app-monitor-runtime-preload *ngIf="monitorStrategyMode === 'product-monitor'"></app-monitor-runtime-preload>
-
-            <div class="form-grid compact">
-              <label><span>Name</span><input [(ngModel)]="taskName" placeholder="Pokemon Drop"></label>
-              <label><span>Shop</span><select [(ngModel)]="selectedShopId" (ngModelChange)="onShopSelected()"><option value="">Select shop</option><option *ngFor="let shop of shops; trackBy: trackShop" [value]="shop.id">{{ shop.name }}</option></select></label>
-              <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor'"><span>Product / keyword / URL</span><input [(ngModel)]="searchTerm" placeholder="Pokemon 151 Booster Bundle"></label>
-              <label class="span-2" *ngIf="monitorStrategyMode === 'early-gate'"><span>Product name</span><input [(ngModel)]="earlyGateProductName" placeholder="Elite Trainer Box"></label>
-              <label><span>Interval</span><div class="input-unit"><input [(ngModel)]="taskIntervalSeconds" type="number" min="1"><b>sec</b></div></label>
-              <label *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><span>{{ taskNeedsCheckoutSession ? 'Profile' : 'Runtime profile (optional)' }}</span><select [(ngModel)]="selectedProfileId" (ngModelChange)="syncProfileDefaults()"><option value="">{{ taskNeedsCheckoutSession ? 'Select profile' : 'No runtime profile' }}</option><option *ngFor="let profile of profiles" [value]="profile.id">{{ profile.name }}</option></select></label>
-              <label *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><span>Proxy route</span><select [(ngModel)]="taskProxyMode"><option value="profile-default">{{ selectedProfileId ? 'Profile default' : 'Direct default' }}</option><option value="direct">Direct</option><option value="proxy">Specific proxy</option></select></label>
-              <label *ngIf="(taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor') && taskProxyMode === 'proxy'"><span>Proxy</span><select [(ngModel)]="selectedTaskProxyId"><option value="">Select proxy</option><option *ngFor="let proxy of proxies; trackBy: trackProxy" [value]="proxy.id">{{ proxy.name }}</option></select></label>
-              <label class="toggle" *ngIf="taskNeedsCheckoutSession || monitorStrategyMode === 'product-monitor'"><input type="checkbox" [(ngModel)]="headless"><span>Headless browser fallback</span></label>
-            </div>
-
-            <div class="keyword-line" *ngIf="monitorStrategyMode === 'early-gate'">
-              <div class="chips"><span *ngFor="let keyword of discoveryKeywords">{{ keyword }}<button (click)="removeDiscoveryKeyword(keyword)">×</button></span></div>
-              <div class="keyword-add"><input [(ngModel)]="newDiscoveryKeyword" (keyup.enter)="addDiscoveryKeyword()" placeholder="Discovery keyword"><button class="ghost" (click)="addDiscoveryKeyword()">Add</button></div>
-            </div>
-
-            <app-profile-cookie-snapshots *ngIf="taskNeedsCheckoutSession" [profileId]="selectedProfileId" mode="select"></app-profile-cookie-snapshots>
-
-            <div class="composer-actions"><small *ngIf="taskNeedsCheckoutSession">Profile vault + runtime isolation; no card data is stored in the task.</small><small *ngIf="monitorStrategyMode === 'product-monitor' && !taskNeedsCheckoutSession">HTTP fast path; Chromium + full runtime only when HTML is empty or ambiguous.</small><button class="primary" (click)="createTask()">Create task</button></div>
-          </div>
-        </details>
-
-        <section class="task-table surface">
-          <div class="table-head"><span>Task</span><span>Route</span><span>Status</span><span>Retries</span><span>Controls</span></div>
-          <div class="empty" *ngIf="!tasks.length">No tasks created yet.</div>
-
-          <div class="task-list-reversed">
-            <article class="task-item" *ngFor="let task of tasks; trackBy: trackTask">
-              <div class="task-main">
-                <i [class.active]="isPausable(task)" [class.paused]="isResumable(task)"></i>
-                <div><strong>{{ task.config.name }}</strong><small>{{ getTaskKind(task) }} · {{ task.config.shopId || 'No shop' }}</small></div>
-              </div>
-              <div class="route"><strong>{{ getTaskProfileName(task) }}</strong><small>{{ getTaskProxyStatus(task) }}</small></div>
-              <span class="state" [ngClass]="task.state.toLowerCase()">{{ task.state }}</span>
-              <span class="retry">{{ task.retries ?? 0 }} / {{ task.maxRetries ?? 0 }}</span>
-              <div class="row-actions">
-                <button *ngIf="isStartable(task)" class="icon primary-icon" title="Start task" (click)="startTask(task.id)">▶</button>
-                <button *ngIf="isPausable(task)" class="icon" title="Pause task" (click)="pauseTask(task.id)">Ⅱ</button>
-                <button *ngIf="isResumable(task)" class="icon primary-icon" title="Resume task" (click)="resumeTask(task.id)">▶</button>
-                <button *ngIf="isStoppable(task)" class="icon danger-icon" title="Stop task" (click)="stopTask(task.id)">■</button>
-                <button *ngIf="isRestartable(task)" class="icon primary-icon" title="Neu starten" (click)="restartTask(task.id)">↻</button>
-                <button class="icon danger-icon" title="Task löschen" (click)="deleteTask(task.id)">×</button>
-                <button class="icon" title="Logs" (click)="toggleTaskLogs(task.id)">···</button>
-              </div>
-
-              <div class="task-wide" *ngIf="isAutoCheckoutTask(task) || isEarlyGateFlowTask(task) || task.lastError">
-                <span *ngIf="isAutoCheckoutTask(task)"><b>Automation</b> {{ getTaskAutomationStatus(task) }}</span>
-                <span *ngIf="isEarlyGateFlowTask(task)"><b>Area</b> {{ getActiveArea(task) }}</span>
-                <span class="err" *ngIf="task.lastError">{{ task.lastError }}</span>
-              </div>
-
-              <div class="task-logs" *ngIf="expandedTaskLogId === task.id">
-                <div class="log-top"><strong>Runtime log</strong><button class="ghost" (click)="loadTaskLogs(task.id)">Refresh</button></div>
-                <div class="empty" *ngIf="!taskLogs[task.id] || !taskLogs[task.id].length">No log entries.</div>
-                <div class="log-line" *ngFor="let log of taskLogs[task.id]" [class.warn]="log.level === 'warn'" [class.error]="log.level === 'error'"><time>{{ log.createdAt | date:'HH:mm:ss' }}</time><b>{{ log.event }}</b><span>{{ log.message }}</span></div>
-              </div>
-            </article>
-          </div>
-        </section>
+        <ng-container *ngTemplateOutlet="taskList; context: { taskItems: tasks, emptyText: 'Noch keine Tasks. Lege sie in Modules an.' }"></ng-container>
       </ng-container>
 
       <ng-container *ngIf="activeTab === 'profiles'">
@@ -217,6 +304,49 @@
           <aside class="surface list-panel"><div class="surface-head"><div><span class="kicker">REGISTERED</span><h3>Storefronts</h3></div></div><div class="empty" *ngIf="!shops.length">No shops yet.</div><div class="shop-row" *ngFor="let shop of shops; trackBy: trackShop"><div><strong>{{ shop.name }}</strong><small>{{ shop.baseUrl }}</small></div><div><span class="platform">{{ getPlatformLabel(shop.platform) }}</span><small>{{ hasExecutorForShop(shop) ? 'Checkout ready' : 'Monitor ready' }}</small></div></div></aside>
         </section>
       </ng-container>
+      <ng-container *ngIf="activeTab === 'captchas'">
+        <section class="page-head">
+          <div><span class="kicker">CAPTCHA SOLVING</span><h2>Captchas</h2><p>Lokales SigLIP und/oder API-Anbieter als Backup. Keys werden verschlüsselt gespeichert.</p></div>
+          <a class="head-chip">{{ captchaProviders.length }} Anbieter</a>
+        </section>
+
+        <section class="surface captcha-mode-panel">
+          <span class="builder-section">Lösungs-Modus</span>
+          <div class="segmented">
+            <button [class.active]="captchaMode === 'siglip'" (click)="setCaptchaMode('siglip')">Nur SigLIP (lokal)</button>
+            <button [class.active]="captchaMode === 'siglip-api'" (click)="setCaptchaMode('siglip-api')">SigLIP + API Fallback</button>
+            <button [class.active]="captchaMode === 'api'" (click)="setCaptchaMode('api')">Nur API (ohne SigLIP)</button>
+          </div>
+          <small class="captcha-mode-hint">
+            <b *ngIf="captchaMode === 'siglip'">Nur das lokale Modell löst Captchas – kein externer Dienst.</b>
+            <b *ngIf="captchaMode === 'siglip-api'">SigLIP zuerst; schlägt es fehl, übernimmt der erste konfigurierte API-Anbieter.</b>
+            <b *ngIf="captchaMode === 'api'">SigLIP wird übersprungen – Captchas gehen direkt an den API-Anbieter.</b>
+          </small>
+        </section>
+
+        <section class="captcha-grid">
+          <article class="surface captcha-card" *ngFor="let provider of captchaProviders">
+            <header>
+              <div><strong>{{ provider.name }}</strong><small>{{ provider.envKey }}</small></div>
+              <span class="captcha-chip" [class.ready]="provider.configured">{{ provider.configured ? provider.maskedKey : 'NICHT KONFIGURIERT' }}</span>
+            </header>
+            <div class="captcha-tags">
+              <span class="captcha-tag" *ngFor="let capability of provider.capabilities">{{ capability === 'token' ? 'TOKEN-INJEKTION' : 'BILD-KLASSIFIKATION' }}</span>
+              <span class="captcha-tag muted">{{ provider.capabilities.includes('classify') ? 'Nur-API ohne SigLIP' : 'Nur-API via Token' }}</span>
+            </div>
+            <div class="captcha-row">
+              <input [(ngModel)]="captchaKeyDrafts[provider.id]" type="password" placeholder="{{ provider.configured ? 'Neuen Key eingeben zum Ändern' : 'API-Key' }}">
+              <button class="primary" [disabled]="captchaBusy || !captchaKeyDrafts[provider.id]" (click)="saveCaptchaProvider(provider.id)">Speichern</button>
+            </div>
+            <div class="captcha-actions">
+              <button class="ghost" [disabled]="captchaBusy || !provider.configured" (click)="testCaptchaProvider(provider.id)">Testen</button>
+              <button class="ghost" [disabled]="captchaBusy || !provider.configured" (click)="deleteCaptchaProvider(provider.id)">Entfernen</button>
+              <small *ngIf="captchaStatus[provider.id]">{{ captchaStatus[provider.id] }}</small>
+            </div>
+          </article>
+        </section>
+      </ng-container>
+
     </main>
   </section>
 </div>

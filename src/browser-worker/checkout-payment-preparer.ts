@@ -36,7 +36,17 @@ export class CheckoutPaymentPreparer {
       return result;
     }
 
-    const selected = await this.selectMethod(page, session.method, session.label);
+    // The card accordion is active by default in most checkouts, but not all:
+    // some land with another method preselected. Only click the card option
+    // when no card field is visible yet, so the default path stays fast.
+    let selected = false;
+    if (session.method === "card") {
+      if (!await this.hasVisibleCardField(page)) {
+        selected = await this.selectMethod(page, session.method, session.label);
+      }
+    } else {
+      selected = await this.selectMethod(page, session.method, session.label);
+    }
     if (selected || session.method === "card") result.selectedMethod = session.method;
 
     if (session.method !== "card") {
@@ -65,12 +75,15 @@ export class CheckoutPaymentPreparer {
       'input[name*="card_number" i]',
       'input[data-card-field="number"]'
     ], result);
-    await this.fillCardField(page, "expiry", card.expiry, [
-      'input[autocomplete="cc-exp"]',
-      'input[name*="expiry" i]',
-      'input[name*="expiration" i]',
-      'input[data-card-field="expiry"]'
-    ], result);
+    const expirySelectsHandled = await this.selectCardExpiry(page, card.expiry, result);
+    if (!expirySelectsHandled) {
+      await this.fillCardField(page, "expiry", card.expiry, [
+        'input[autocomplete="cc-exp"]',
+        'input[name*="expiry" i]',
+        'input[name*="expiration" i]',
+        'input[data-card-field="expiry"]'
+      ], result);
+    }
     await this.fillCardField(page, "securityCode", card.securityCode, [
       'input[autocomplete="cc-csc"]',
       'input[name*="security_code" i]',
@@ -131,6 +144,51 @@ export class CheckoutPaymentPreparer {
     return false;
   }
 
+  private async selectCardExpiry(page: Page, expiry: string | undefined, result: PaymentPreparationResult): Promise<boolean> {
+    const raw = String(expiry ?? "").trim();
+    const match = raw.match(/^(\d{1,2})\s*[/\-.]\s*(\d{2,4})$/);
+    if (!match) return false;
+    const month = match[1].padStart(2, "0");
+    const yearFull = match[2].length === 2 ? `20${match[2]}` : match[2];
+    const yearShort = yearFull.slice(-2);
+    const monthSelected = await this.selectFirstMatch(page, [
+      'select[autocomplete="cc-exp-month"]',
+      'select[name*="expiryMonth" i]',
+      'select[name*="exp_month" i]',
+      'select[id*="ExpiryMonth" i]',
+      'select[id*="expMonth" i]',
+      'select[id*="expiry-month" i]'
+    ], [month, String(Number(month))]);
+    const yearSelected = await this.selectFirstMatch(page, [
+      'select[autocomplete="cc-exp-year"]',
+      'select[name*="expiryYear" i]',
+      'select[name*="exp_year" i]',
+      'select[id*="ExpiryYear" i]',
+      'select[id*="expYear" i]',
+      'select[id*="expiry-year" i]'
+    ], [yearFull, yearShort]);
+    if (monthSelected && yearSelected) {
+      result.filledFields.push("expiry");
+      return true;
+    }
+    return false;
+  }
+
+  private async selectFirstMatch(page: Page, selectors: string[], values: string[]): Promise<boolean> {
+    for (const frame of this.frames(page)) {
+      for (const selector of selectors) {
+        const locator = frame.locator(selector).first();
+        for (const value of values) {
+          try {
+            await locator.selectOption(value);
+            return true;
+          } catch {}
+        }
+      }
+    }
+    return false;
+  }
+
   private async fillCardField(
     page: Page,
     key: string,
@@ -148,13 +206,36 @@ export class CheckoutPaymentPreparer {
         const locator = frame.locator(selector).first();
         if (!await this.isVisible(locator)) continue;
         try {
-          await locator.fill(value.trim(), { timeout: 1_500 });
+          // Smooth native wheel scroll (no-op when already in view), then type.
+          await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+          // Card data is typed slowly through trusted CDP key events. Payment
+          // widgets run per-keystroke masking/validation and treat bulk value
+          // injection (or synthetic input events) as non-human. The card number
+          // is entered in blocks of four with a pause and a couple of
+          // self-corrected typos, like a person reading the card.
+          const blockOptions = key === "cardNumber"
+            ? { groupSize: 4, groupSizeMin: 3, groupPauseMinMs: 900, groupPauseMaxMs: 2200, typoCount: 2 }
+            : key === "securityCode"
+              ? { typoCount: 1 }
+              : {};
+          await locator.type(value.trim(), {
+            timeout: 60_000,
+            interKeyDelayMinMs: 120,
+            interKeyDelayMaxMs: 280,
+            typoProbability: 0.08,
+            // Card values are only ever written with native CDP key events and
+            // are deliberately not read back through the page context.
+            verify: false,
+            ...blockOptions
+          });
           result.filledFields.push(key);
           return;
         } catch {}
       }
     }
-    result.missingFields.push(key);
+    // The cardholder name is optional and absent on many payment widgets; a
+    // missing holder-name field must not block purchase readiness.
+    if (key !== "holderName") result.missingFields.push(key);
   }
 
   private frames(page: Page): Frame[] {
@@ -163,7 +244,7 @@ export class CheckoutPaymentPreparer {
 
   private async safeBodyText(frame: Frame): Promise<string> {
     try {
-      return await frame.locator("body").innerText({ timeout: 500 });
+      return await frame.locator("body").innerText({ timeout: 250 });
     } catch {
       return "";
     }
@@ -171,7 +252,7 @@ export class CheckoutPaymentPreparer {
 
   private async isVisible(locator: Locator): Promise<boolean> {
     try {
-      return await locator.isVisible({ timeout: 250 });
+      return await locator.isVisible({ timeout: 100 });
     } catch {
       return false;
     }

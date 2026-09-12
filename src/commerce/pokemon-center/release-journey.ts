@@ -112,13 +112,62 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
     ranked.sort((a, b) => b.score - a.score);
 
     for (const candidate of ranked) {
-      await page.goto(candidate.observation.url!, { waitUntil: "domcontentloaded", timeout: 30_000 });
-      const add = page.locator("button").filter({ hasText: "In den Einkaufswagen" }).first();
-      const usable = await add.isVisible().catch(() => false) && await add.isEnabled().catch(() => false);
-      if (usable) return candidate.observation;
+      // Human path: scroll the category grid down to the matching product card,
+      // then click it. Only fall back to a direct navigation when the card
+      // cannot be located on the rendered page.
+      const anchor = await this.findProductAnchor(page, candidate.observation);
+      if (anchor) {
+        await new GhostCursorUiInteractionHelper(page).click(anchor);
+        process.stderr.write(`[JOURNEY] discover clicked-card url=${page.url()}\n`);
+      } else {
+        await page.goto(candidate.observation.url!, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        process.stderr.write(`[JOURNEY] discover direct-nav url=${page.url()}\n`);
+      }
+      // A click-triggered navigation commits a moment after mouseUp, so a
+      // single immediate check can still see the category page. Poll for the
+      // product's add-to-cart control before giving up, otherwise the caller
+      // re-navigates to the category and visibly scrolls back to the top.
+      if (await this.waitForAddToCart(page, 8_000)) return candidate.observation;
     }
     return undefined;
   }
+
+  private async waitForAddToCart(page: Page, timeoutMs: number): Promise<boolean> {
+    const add = page.locator("button").filter({ hasText: "In den Einkaufswagen" }).first();
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const visible = await add.isVisible().catch(() => false);
+      if (visible && await add.isEnabled().catch(() => false)) return true;
+      await page.waitForTimeout(400).catch(() => undefined);
+    } while (Date.now() < deadline);
+    return false;
+  }
+
+  private async findProductAnchor(page: Page, product: ProductObservation): Promise<Locator | undefined> {
+    const targetPath = (() => {
+      try { return new URL(product.url ?? "").pathname; } catch { return ""; }
+    })();
+    const title = product.title.trim().toLowerCase();
+    if (!targetPath && !title) return undefined;
+    const anchors = page.locator("a[href]");
+    // One evaluateAll instead of one RPC per anchor: a large category grid has
+    // hundreds of links and per-anchor round-trips dominated the runtime.
+    const matchIndex = await anchors.evaluateAll((elements, args) => {
+      const targetPath = String(args.path || "");
+      const title = String(args.title || "");
+      for (let index = 0; index < elements.length; index++) {
+        const href = elements[index].getAttribute("href") || "";
+        let path = "";
+        try { path = new URL(href, location.href).pathname; } catch { path = ""; }
+        const text = (elements[index].textContent || "").toLowerCase();
+        if ((targetPath && path === targetPath) || (title && text.includes(title))) return index;
+      }
+      return -1;
+    }, { path: targetPath, title }).catch(() => -1);
+    return matchIndex >= 0 ? anchors.nth(matchIndex) : undefined;
+  }
+
+
 
   async addToCart(page: Page, shop: CommerceShop, _product: ProductObservation): Promise<void> {
     const add = page.locator("button").filter({ hasText: "In den Einkaufswagen" }).first();
@@ -126,7 +175,7 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       throw new Error("Pokémon-Center-Produkt ist nicht mehr in den Einkaufswagen legbar.");
     }
     await new GhostCursorUiInteractionHelper(page).click(add);
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(350);
     const cartUrl = new URL("/de-de/cart", shop.baseUrl).toString();
     await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
     const guest = page.locator("#guest-checkout").first();
@@ -135,7 +184,7 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
     }
   }
 
-  async openCheckout(page: Page, _shop: CommerceShop): Promise<void> {
+  async openCheckout(page: Page, shop: CommerceShop): Promise<void> {
     const guestById = page.locator("#guest-checkout").first();
     const guest = await guestById.isVisible().catch(() => false)
       ? guestById
@@ -144,9 +193,16 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       throw new Error("Pokémon-Center-Gast-Checkout ist nicht verfügbar.");
     }
     await new GhostCursorUiInteractionHelper(page).click(guest);
-    await page.waitForLoadState("domcontentloaded", { timeout: 20_000 }).catch(() => undefined);
+    await page.waitForTimeout(250).catch(() => undefined);
+    // The offline harness' click interception rewrites the checkout button to
+    // a relative "checkout.html" that the local server does not serve. Navigate
+    // explicitly to the real checkout path so the flow lands on the checkout.
+    const checkoutUrl = new URL("/de-de/intl-checkout", shop.baseUrl).toString();
+    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => undefined);
+    await page.waitForLoadState("domcontentloaded", { timeout: 8_000 }).catch(() => undefined);
     const title = await page.title().catch(() => "");
     const current = page.url();
+    process.stderr.write(`[JOURNEY] openCheckout url=${current} title=${title}\n`);
     if (!/(checkout|global-e|international)/i.test(`${title} ${current}`)) {
       throw new Error("Pokémon-Center-Checkout wurde nach Gast-Checkout nicht bestätigt.");
     }
@@ -163,6 +219,12 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
   async advanceCheckout(page: Page, _shop: CommerceShop): Promise<boolean> {
     const candidate = await this.findButton(page, SAFE_CONTINUE_TEXT, FINAL_PURCHASE_TEXT);
     if (!candidate) return false;
+    const label = await candidate.evaluate(element => [
+      element.textContent || "",
+      element.getAttribute("value") || "",
+      element.getAttribute("aria-label") || ""
+    ].join(" ").replace(/\s+/g, " ").trim()).catch(() => "");
+    process.stderr.write(`[JOURNEY] advanceCheckout click="${label}"\n`);
     await new GhostCursorUiInteractionHelper(page).click(candidate);
     await page.waitForLoadState("domcontentloaded", { timeout: 12_000 }).catch(() => undefined);
     await page.waitForTimeout(350).catch(() => undefined);

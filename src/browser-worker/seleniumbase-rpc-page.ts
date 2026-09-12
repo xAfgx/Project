@@ -103,6 +103,7 @@ class SeleniumBaseRpcLocator implements Locator {
   async isEnabled(options: { timeout?: number } = {}): Promise<boolean> { return Boolean(await this.op("is-enabled", {}, options.timeout ?? 2_000).catch(() => false)); }
   async click(options: Record<string, unknown> = {}): Promise<void> { await this.op("click", { options }, Number(options["timeout"] ?? 15_000)); }
   async fill(value: string, options: Record<string, unknown> = {}): Promise<void> { await this.op("fill", { value, options }, Number(options["timeout"] ?? 15_000)); }
+  async type(value: string, options: Record<string, unknown> = {}): Promise<void> { await this.op("type", { value, options }, Number(options["timeout"] ?? 60_000)); }
   async inputValue(options: { timeout?: number } = {}): Promise<string> { return String(await this.op("input-value", {}, options.timeout ?? 5_000).catch(() => false) ?? ""); }
   async innerText(options: { timeout?: number } = {}): Promise<string> { return String(await this.op("inner-text", {}, options.timeout ?? 5_000) ?? ""); }
   async allTextContents(): Promise<string[]> { const value = await this.op("all-text-contents"); return Array.isArray(value) ? value.map(item => String(item ?? "")) : []; }
@@ -181,7 +182,21 @@ export class SeleniumBaseRpcPage implements Page {
   async waitForTimeout(ms: number): Promise<void> { await sleep(Math.max(0,ms)); }
   async waitForLoadState(state="domcontentloaded",options:{timeout?:number}={}):Promise<void>{await this.command("rpc",{action:"wait-load-state",state,timeoutMs:options.timeout},options.timeout??15_000);await this.refreshPageState(true).catch(()=>undefined);}
   async bringToFront():Promise<void>{await this.command("rpc",{action:"bring-to-front"},5_000);}
-  async solveCaptcha():Promise<boolean>{const reply=await this.command("rpc",{action:"force-captcha-poll"},15_000).catch(()=>undefined as RpcReply|undefined);return Boolean(reply?.result);}
+  async reinstallStealthSpoof():Promise<boolean>{const reply=await this.command("rpc",{action:"reinstall-stealth-spoof"},20_000).catch(()=>undefined as RpcReply|undefined);return Boolean(reply?.result);}
+  async solveCaptcha():Promise<boolean>{
+    const captcha={
+      mode:process.env["ARES_CAPTCHA_MODE"]||"siglip",
+      keys:{
+        CAPMONSTER_API_KEY:process.env["CAPMONSTER_API_KEY"]||"",
+        TWOCAPTCHA_API_KEY:process.env["TWOCAPTCHA_API_KEY"]||"",
+        CAPSOLVER_API_KEY:process.env["CAPSOLVER_API_KEY"]||"",
+        ANTICAPTCHA_API_KEY:process.env["ANTICAPTCHA_API_KEY"]||"",
+        NOCAPTCHA_API_KEY:process.env["NOCAPTCHA_API_KEY"]||""
+      }
+    };
+    const reply=await this.command("rpc",{action:"force-captcha-poll",captcha},25_000).catch(()=>undefined as RpcReply|undefined);
+    return Boolean(reply?.result);
+  }
   on(event:string,listener:(...args:any[])=>void):Page{
     if(event==="response")this.responseListeners.add(listener as (response:Response)=>void);
     else if(event==="load")this.loadListeners.add(listener);
@@ -211,7 +226,7 @@ export class SeleniumBaseRpcPage implements Page {
     this.responseListeners.clear();
     this.loadListeners.clear();
     this.frameNavigationListeners.clear();
-    if(!this.transport.closed)await this.transport.request("close",{},15_000).catch(()=>undefined);
+    if(!this.transport.closed)await this.transport.request("close",{},45_000).catch(()=>undefined);
   }
   private hasLifecycleListeners():boolean{return this.loadListeners.size>0||this.frameNavigationListeners.size>0;}
   private ensureEventPoll():void{

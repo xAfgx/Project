@@ -1,4 +1,7 @@
-import { Component, OnDestroy, OnInit } from "@angular/core";
+import { AfterViewInit, Component, OnDestroy, OnInit } from "@angular/core";
+import { tsParticles } from "tsparticles-engine";
+import type { Container, ISourceOptions } from "tsparticles-engine";
+import { loadSlim } from "tsparticles-slim";
 import { ElectronService } from "./services/electron.service";
 import { TaskState } from "../models";
 import { COMMERCE_PLATFORMS, CommercePlatform } from "../commerce/platforms";
@@ -12,12 +15,28 @@ import {
   type ProfileV2Draft
 } from "../profiles/profile-v2";
 
-type AppTab = "dashboard" | "tasks" | "profiles" | "proxies" | "shops";
+type AppTab = "dashboard" | "modules" | "tasks" | "profiles" | "proxies" | "shops" | "captchas";
 type ProfileTab = "identity" | "address" | "browser" | "payment";
 type TaskCreationMode = "monitor-only" | "auto-checkout";
 type MonitorStrategyMode = "product-monitor" | "early-gate";
+type ModuleModeId = "direct" | "early-gate";
 type ProfileView = ProfileV2Draft;
 type FlowStepKey = "monitoring" | "gate-detected" | "waiting-queue" | "released" | "post-queue-discovery" | "product-found" | "cart" | "checkout";
+
+interface ModuleModeView {
+  id: ModuleModeId;
+  label: string;
+  hint: string;
+}
+
+interface ModuleView {
+  id: string;
+  name: string;
+  tagline: string;
+  accent: string;
+  platform: CommercePlatform;
+  modes: ModuleModeView[];
+}
 
 interface ShopView {
   id: string;
@@ -90,7 +109,7 @@ interface SystemStatus {
   templateUrl: "./app.component.html",
   styleUrls: ["./app.component.scss"]
 })
-export class AppComponent implements OnInit, OnDestroy {
+export class AppComponent implements OnInit, OnDestroy, AfterViewInit {
   activeTab: AppTab = "dashboard";
   profileTab: ProfileTab = "identity";
 
@@ -133,9 +152,52 @@ export class AppComponent implements OnInit, OnDestroy {
 
   monitorStrategyMode: MonitorStrategyMode = "product-monitor";
   taskMode: TaskCreationMode = "monitor-only";
+
+  // Module hub (retailer modules). Selecting a module scopes the task builder
+  // to that retailer and offers its supported task modes.
+  selectedModuleId = "";
+  moduleMode: ModuleModeId = "direct";
+  readonly modules: ModuleView[] = [
+    {
+      id: "pokemon-center",
+      name: "Pokémon Center",
+      tagline: "Queue · Captcha · Guest Checkout",
+      accent: "#e60012",
+      platform: "pokemon-center",
+      modes: [
+        { id: "direct", label: "Direkt zum Checkout", hint: "Produkt überwachen und beim Verfügbarwerden sofort in den Checkout – ohne Queue-Monitor." },
+        { id: "early-gate", label: "Erst Queue, dann Checkout", hint: "Früh in die Warteschlange, Position halten, bei Release automatisch Checkout starten." }
+      ]
+    },
+    {
+      id: "shopify",
+      name: "Shopify",
+      tagline: "Password · Cart · Checkout",
+      accent: "#95bf47",
+      platform: "shopify",
+      modes: [
+        { id: "direct", label: "Direct Task", hint: "Ein Browser, direkter Checkout-Flow" }
+      ]
+    }
+  ];
+
+  captchaProviders: Array<{
+    id: string;
+    name: string;
+    envKey: string;
+    capabilities: string[];
+    enabled: boolean;
+    configured: boolean;
+    maskedKey: string;
+    updatedAt?: string;
+  }> = [];
+  captchaMode: "siglip" | "siglip-api" | "api" = "siglip-api";
+  readonly captchaKeyDrafts: Record<string, string> = {};
+  readonly captchaStatus: Record<string, string> = {};
+  captchaBusy = false;
+
   taskName = "";
-  searchTerm = "";
-  earlyGateProductName = "";
+  searchTerm = "";  earlyGateProductName = "";
   discoveryKeywords: string[] = [];
   newDiscoveryKeyword = "";
   readonly liveKeywordDrafts: Record<string, string> = {};
@@ -171,7 +233,67 @@ export class AppComponent implements OnInit, OnDestroy {
   private unsubscribeStatus?: () => void;
   private taskUpdateTimer?: ReturnType<typeof setTimeout>;
 
+  /**
+   * tsParticles (MIT, official Angular binding) renders the cosmic background.
+   * A single canvas keeps the cost minimal; the diagonal drift reads as a
+   * meteor shower without any per-frame layout work.
+   */
+  readonly particlesId = "ares-cosmic-particles";
+  private particlesReady = false;
+  private meteorContainer?: Container;
+  readonly meteorOptions: ISourceOptions = {
+    fullScreen: { enable: false },
+    fpsLimit: 60,
+    detectRetina: false,
+    pauseOnBlur: true,
+    pauseOnOutsideViewport: true,
+    particles: {
+      number: { value: 26 },
+      color: { value: ["#6f9dff", "#4a76ff", "#9fc0ff", "#7fb2ff", "#5b8cff"] },
+      shape: { type: "circle" },
+      opacity: { value: { min: 0.75, max: 1 } },
+      size: { value: { min: 1.6, max: 3.0 } },
+      move: {
+        enable: true,
+        speed: { min: 0.8, max: 2.2 },
+        direction: "bottom-left",
+        straight: true,
+        outModes: { default: "out" }
+      }
+    }
+  };
+
   constructor(private readonly electron: ElectronService) {}
+
+  private async ensureParticles(): Promise<void> {
+    if (this.particlesReady) return;
+    this.particlesReady = true;
+    try {
+      await loadSlim(tsParticles);
+    } catch {
+      this.particlesReady = false;
+    }
+  }
+
+  async ngAfterViewInit(): Promise<void> {
+    await this.ensureParticles();
+    await this.mountParticles();
+  }
+
+  private async mountParticles(): Promise<void> {
+    if (this.meteorContainer) return;
+    if (!document.getElementById(`${this.particlesId}-meteors`)) return;
+    await this.ensureParticles();
+    try {
+      this.meteorContainer = await tsParticles.load({ id: `${this.particlesId}-meteors`, options: this.meteorOptions });
+    } catch {
+      // Decorative only: never let the particle layer break the app.
+    }
+  }
+
+  private syncParticles(): void {
+    setTimeout(() => void this.mountParticles(), 0);
+  }
 
   async ngOnInit(): Promise<void> {
     await Promise.all([
@@ -179,7 +301,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loadProfiles(),
       this.loadProxies(),
       this.loadTasks(),
-      this.loadSystemStatus()
+      this.loadSystemStatus(),
+      this.loadCaptchaProviders()
     ]);
 
     this.syncProfileDefaults();
@@ -191,6 +314,7 @@ export class AppComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.unsubscribeStatus?.();
     if (this.taskUpdateTimer) clearTimeout(this.taskUpdateTimer);
+    this.meteorContainer?.destroy();
   }
 
   private scheduleTaskViewRefresh(): void {
@@ -210,6 +334,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.activeTab = tab;
     this.error = "";
     this.info = "";
+    this.syncParticles();
   }
 
   setProfileTab(tab: ProfileTab): void {
@@ -219,6 +344,128 @@ export class AppComponent implements OnInit, OnDestroy {
   setMonitorStrategy(mode: MonitorStrategyMode): void {
     this.monitorStrategyMode = mode;
     if (mode === "early-gate") this.taskMode = "auto-checkout";
+  }
+
+  get selectedModule(): ModuleView | undefined {
+    return this.modules.find(module => module.id === this.selectedModuleId);
+  }
+
+  /** Tasks that belong to the currently opened module (by shop platform). */
+  get moduleTasks(): TaskView[] {
+    const module = this.selectedModule;
+    if (!module) return [];
+    const shopIds = new Set(this.shops.filter(shop => shop.platform === module.platform).map(shop => shop.id));
+    if (!shopIds.size) return this.tasks;
+    return this.tasks.filter(task => shopIds.has(String(task.config.shopId ?? "")));
+  }
+
+  /** Shops offered inside the task builder: scoped to the module when open. */
+  get composerShopOptions(): ShopView[] {
+    if (this.activeTab !== "modules" || !this.selectedModule) return this.shops;
+    const matching = this.shops.filter(shop => shop.platform === this.selectedModule?.platform);
+    return matching.length ? matching : this.shops;
+  }
+
+  openModule(moduleId: string): void {
+    const module = this.modules.find(item => item.id === moduleId);
+    if (!module) return;
+    this.selectedModuleId = module.id;
+    this.error = "";
+    this.info = "";
+    this.activeTab = "modules";
+    this.syncParticles();
+    this.selectModuleMode(module.modes[0]?.id ?? "direct");
+    const shop = this.shops.find(item => item.platform === module.platform);
+    if (shop) {
+      this.selectedShopId = shop.id;
+      this.onShopSelected();
+    }
+  }
+
+  closeModule(): void {
+    this.selectedModuleId = "";
+  }
+
+  selectModuleMode(mode: ModuleModeId): void {
+    this.moduleMode = mode;
+    if (mode === "early-gate") {
+      this.setMonitorStrategy("early-gate");
+      return;
+    }
+    this.setMonitorStrategy("product-monitor");
+    this.taskMode = "auto-checkout";
+  }
+
+  // ---------- Captcha providers ----------
+
+  async loadCaptchaProviders(): Promise<void> {
+    const api = (window as any).ares;
+    if (!api?.listCaptchaProviders) return;
+    const result = await api.listCaptchaProviders().catch(() => undefined);
+    if (result?.success) this.captchaProviders = result.providers || [];
+    const mode = await api.getCaptchaMode?.().catch(() => undefined);
+    if (mode?.success) this.captchaMode = mode.mode;
+  }
+
+  async setCaptchaMode(mode: "siglip" | "siglip-api" | "api"): Promise<void> {
+    const api = (window as any).ares;
+    if (!api?.setCaptchaMode) return;
+    const result = await api.setCaptchaMode(mode).catch(() => undefined);
+    if (result?.success) this.captchaMode = result.mode;
+  }
+
+  async saveCaptchaProvider(id: string): Promise<void> {
+    const api = (window as any).ares;
+    if (!api?.saveCaptchaProvider) return;
+    this.captchaBusy = true;
+    try {
+      const result = await api.saveCaptchaProvider(id, { apiKey: this.captchaKeyDrafts[id] || "", enabled: true });
+      if (!result?.success) {
+        this.captchaStatus[id] = result?.error || "Speichern fehlgeschlagen.";
+        return;
+      }
+      this.captchaKeyDrafts[id] = "";
+      this.captchaStatus[id] = "Gespeichert.";
+      await this.loadCaptchaProviders();
+    } finally {
+      this.captchaBusy = false;
+    }
+  }
+
+  async deleteCaptchaProvider(id: string): Promise<void> {
+    const api = (window as any).ares;
+    if (!api?.deleteCaptchaProvider) return;
+    this.captchaBusy = true;
+    try {
+      await api.deleteCaptchaProvider(id);
+      this.captchaStatus[id] = "Entfernt.";
+      await this.loadCaptchaProviders();
+    } finally {
+      this.captchaBusy = false;
+    }
+  }
+
+  async testCaptchaProvider(id: string): Promise<void> {
+    const api = (window as any).ares;
+    if (!api?.testCaptchaProvider) return;
+    this.captchaBusy = true;
+    this.captchaStatus[id] = "Teste…";
+    try {
+      const result = await api.testCaptchaProvider(id).catch(() => undefined);
+      if (!result) {
+        this.captchaStatus[id] = "Test fehlgeschlagen.";
+        return;
+      }
+      if (!result.success) {
+        this.captchaStatus[id] = result.error || "Test fehlgeschlagen.";
+        return;
+      }
+      this.captchaStatus[id] = result.valid
+        ? `Gültig${result.balance !== undefined ? ` · Guthaben: ${result.balance}` : ""}`
+        : `Abgelehnt${result.error ? ` (${result.error})` : ""}`;
+    } finally {
+      this.captchaBusy = false;
+    }
   }
 
   onShopSelected(): void {

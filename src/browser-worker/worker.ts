@@ -39,6 +39,19 @@ const emitTaskUpdate = (task: any) => { stampProfileOwnedBrowserSession(task); s
 const shopifyExecutor = new ShopifyTaskExecutor(shopId => { const shop = shops.get(shopId); return shop && isShopifyRuntimeShop(shop) ? shop : undefined; }, profileId => profiles.get(profileId), browserCore, undefined, emitTaskUpdate);
 const shopifyPurchaseReadyExecutor = new ShopifyPurchaseReadyExecutor(shopifyExecutor, browserCore, emitTaskUpdate);
 const earlyGateExecutor = new EarlyGateBrowserTaskExecutor(shopId => shops.get(shopId), profileId => profiles.get(profileId), shop => pokemonCenterJourney.supports(shop) ? pokemonCenterJourney : undefined, browserCore, emitTaskUpdate);
+function applyCaptchaConfig(captcha: { mode?: string; keys?: Record<string, string> } | undefined): void {
+  const mode = String(captcha?.mode || "").trim().toLowerCase();
+  if (mode === "siglip" || mode === "siglip-api" || mode === "api") process.env["ARES_CAPTCHA_MODE"] = mode;
+  const keys = captcha?.keys;
+  if (!keys || typeof keys !== "object") return;
+  for (const [key, value] of Object.entries(keys)) {
+    if (!/^[A-Z0-9_]+_API_KEY$/.test(key)) continue;
+    const text = String(value ?? "").trim();
+    if (text) process.env[key] = text;
+    else delete process.env[key];
+  }
+}
+
 const browserGateMonitorExecutor = new BrowserGateMonitorExecutor(shopId => shops.get(shopId), profileId => profiles.get(profileId), browserCore);
 browserGateMonitorExecutor.onTaskUpdate(emitTaskUpdate);
 
@@ -60,9 +73,15 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
 
         let success: boolean;
         if (gateMonitor) {
-          const monitorSuccess = await browserGateMonitorExecutor.execute(request.task);
+          const monitorResult = await browserGateMonitorExecutor.execute(request.task);
+          const monitorSuccess = typeof monitorResult === "object" && monitorResult !== null
+            ? monitorResult.success
+            : monitorResult;
           if (!monitorSuccess) success = false;
           else {
+            const existingHandle = typeof monitorResult === "object" && monitorResult !== null
+              ? (monitorResult as { handle?: import("./types").BrowserContextHandle }).handle
+              : undefined;
             request.task.config.data = {
               ...(request.task.config.data ?? {}),
               earlyGateLane: {
@@ -71,7 +90,7 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
               }
             };
             emitTaskUpdate(request.task);
-            success = await earlyGateExecutor.execute(request.task, paymentSession);
+            success = await earlyGateExecutor.execute(request.task, paymentSession, existingHandle);
           }
         } else if (earlyGateChild) success = await earlyGateExecutor.execute(request.task, paymentSession);
         else success = await shopifyPurchaseReadyExecutor.execute(request.task, request.profile, paymentSession);
@@ -85,6 +104,7 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
       }
     }
     if (request.type === "update-discovery-keywords") { const keywords = await earlyGateExecutor.updateDiscoveryKeywords(request.taskId, request.keywords); send({ type: "ack", requestId: request.requestId, keywords }); return; }
+    if (request.type === "set-captcha-config") { applyCaptchaConfig(request.captcha); send({ type: "ack", requestId: request.requestId }); return; }
     if (request.type === "set-final-purchase-permission") { await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(request.allowed === true), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(request.allowed === true)]); send({ type: "ack", requestId: request.requestId, allowFinalPurchase: request.allowed === true }); return; }
     if (request.type === "cancel") { await Promise.allSettled([browserGateMonitorExecutor.cancelTask(request.taskId), earlyGateExecutor.cancelTask(request.taskId), shopifyPurchaseReadyExecutor.cancelTask(request.taskId)]); browserCore.unbindTaskProfile(request.taskId); send({ type: "ack", requestId: request.requestId }); return; }
     if (request.type === "health") { const health = await browserCore.health(); send({ type: "health-result", requestId: request.requestId, health: { ...health, startedAt: health.startedAt.toISOString() }, pid: process.pid, nodeVersion: process.versions.node }); return; }

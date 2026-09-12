@@ -14,7 +14,8 @@ import {
   type InteractionProfiles,
   type InteractionTargetState,
   type ScrollInteractionOptions,
-  type SelectInteractionOptions
+  type SelectInteractionOptions,
+  type TypeInteractionOptions
 } from "./interaction-models";
 import {
   DEFAULT_READINESS_POLICY,
@@ -100,6 +101,9 @@ export class InteractionEngine {
 
       const target = this.chooseTargetPoint(lastState.box!, random);
       try {
+        // Human hesitation before pressing: navigation-triggering clicks must
+        // not fire the instant the pointer reaches the target.
+        await this.pauseForClick(random, this.profiles.pointer.preClickPauseMinMs, this.profiles.pointer.preClickPauseMaxMs);
         if (this.pointerDriver) {
           await this.pointerDriver.click(target, {
             button: options.button ?? "left",
@@ -113,6 +117,7 @@ export class InteractionEngine {
           });
         }
         this.pointer = target;
+        await this.pauseForClick(random, this.profiles.pointer.postClickPauseMinMs, this.profiles.pointer.postClickPauseMaxMs);
       } catch (error) {
         failureReason = "action-error";
         trace.push({
@@ -174,6 +179,22 @@ export class InteractionEngine {
       "ares-form-fill",
       options.expected ?? locatorValueEquals(locator, value),
       () => locator.fill(value)
+    );
+  }
+
+  async type(locator: Locator, value: string, options: TypeInteractionOptions = {}): Promise<InteractionAttemptResult> {
+    return this.runFormAction(
+      locator,
+      options,
+      "ares-form-type",
+      options.expected ?? locatorValueEquals(locator, value),
+      () => locator.type(value, {
+        interKeyDelayMinMs: options.interKeyDelayMinMs,
+        interKeyDelayMaxMs: options.interKeyDelayMaxMs,
+        clear: options.clear,
+        click: options.click,
+        typoProbability: options.typoProbability
+      })
     );
   }
 
@@ -447,6 +468,13 @@ export class InteractionEngine {
       x: clamp(centerX + random.between(-maxOffsetX, maxOffsetX), box.x + insetX, box.x + box.width - insetX),
       y: clamp(centerY + random.between(-maxOffsetY, maxOffsetY), box.y + insetY, box.y + box.height - insetY)
     };
+  }
+
+  private async pauseForClick(random: SeededRandom, minMs: number, maxMs: number): Promise<void> {
+    const lower = Math.max(0, Math.floor(minMs));
+    const upper = Math.max(lower, Math.floor(maxMs));
+    const delay = random.integer(lower, upper);
+    if (delay > 0) await sleep(delay);
   }
 
   private async movePointer(target: InteractionPoint, random: SeededRandom): Promise<void> {

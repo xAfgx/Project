@@ -16,9 +16,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   min-height: 100vh;
   display: grid;
   grid-template-columns: 212px minmax(0, 1fr);
-  background:
-    radial-gradient(circle at 82% 8%, rgba(99, 102, 241, .08), transparent 30%),
-    #0a0b0d;
+  background-color: #0a0b0d;
+  background-size: cover;
+  background-position: center top;
+  background-repeat: no-repeat;
 }
 
 .sidebar {
@@ -34,11 +35,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 
 .brand { display: flex; align-items: center; gap: 11px; padding: 4px 8px 28px; }
 .brand-mark {
-  width: 34px; height: 34px; display: grid; place-items: center;
-  border-radius: 10px; font-weight: 900; font-size: 17px;
-  background: linear-gradient(145deg, #7377ff, #4f46e5);
-  box-shadow: 0 10px 28px rgba(79, 70, 229, .22);
+  width: 38px; height: 38px; display: grid; place-items: center;
+  border-radius: 12px; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, rgba(35, 48, 110, .9), rgba(6, 9, 22, .95));
+  box-shadow: 0 10px 28px rgba(30, 40, 120, .32), inset 0 0 0 1px rgba(140, 158, 255, .22);
 }
+.brand-mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .brand strong { display: block; font-size: 15px; letter-spacing: .08em; }
 .brand span { display: block; margin-top: 2px; color: #747a84; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
 

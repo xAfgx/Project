@@ -39,9 +39,26 @@ interface PaymentVaultEntry {
   updatedAt: string;
 }
 
+interface PaymentVaultCardEntry extends PaymentVaultEntry {
+  label?: string;
+}
+
 interface PaymentVaultFile {
   version: 1;
   entries: Record<string, PaymentVaultEntry>;
+}
+
+interface PaymentVaultFileV2 {
+  version: 2;
+  cards: Record<string, PaymentVaultCardEntry>;
+  assignments: Record<string, string>;
+  entries?: Record<string, PaymentVaultEntry>;
+}
+
+export interface ProfilePaymentCardSummary {
+  id: string;
+  label: string;
+  view: ProfilePaymentCardView;
 }
 
 const MASKED_CARD_PATTERN = /[•*xX]/;
@@ -97,6 +114,8 @@ function maskCardNumber(cardNumber: string): string {
  */
 export class ProfilePaymentVault {
   private readonly entries = new Map<string, PaymentVaultEntry>();
+  private readonly cards = new Map<string, PaymentVaultCardEntry>();
+  private readonly assignments = new Map<string, string>();
 
   constructor(
     private readonly storagePath: string,
@@ -109,10 +128,138 @@ export class ProfilePaymentVault {
     return this.crypto.isEncryptionAvailable();
   }
 
+  /**
+   * Legacy per-profile save: stores the card under the profile id and assigns
+   * it to that profile, so the card manager can later share it with others.
+   */
   save(profileId: string, draft: ProfilePaymentCardDraft): ProfilePaymentCardView {
-    this.assertEncryptionAvailable();
     const id = this.normalizeProfileId(profileId);
-    const existing = this.readSecret(id);
+    const view = this.upsertCard(id, draft);
+    this.assignments.set(id, id);
+    this.persist();
+    return view;
+  }
+
+  /** Create or update a named card in the shared card registry. */
+  saveCard(cardId: string, draft: ProfilePaymentCardDraft, label?: string): ProfilePaymentCardView {
+    const id = this.normalizeProfileId(cardId);
+    const view = this.upsertCard(id, draft, label);
+    this.persist();
+    return view;
+  }
+
+  listCards(): ProfilePaymentCardSummary[] {
+    const summaries: ProfilePaymentCardSummary[] = [];
+    for (const [id, entry] of this.cards.entries()) {
+      try {
+        const secret = this.decrypt(entry);
+        summaries.push({
+          id,
+          label: entry.label?.trim() || maskCardNumber(secret.cardNumber),
+          view: this.toView(secret, entry.updatedAt)
+        });
+      } catch {
+        // Skip unreadable entries instead of failing the whole list.
+      }
+    }
+    return summaries.sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  deleteCard(cardId: string): boolean {
+    const id = this.normalizeProfileId(cardId);
+    const deleted = this.cards.delete(id);
+    let changed = deleted;
+    for (const [profileId, assigned] of [...this.assignments.entries()]) {
+      if (assigned === id) {
+        this.assignments.delete(profileId);
+        changed = true;
+      }
+    }
+    if (changed) this.persist();
+    return deleted;
+  }
+
+  /** Assign a shared card to a profile (or clear the assignment with null). */
+  assignCard(profileId: string, cardId: string | null): void {
+    const id = this.normalizeProfileId(profileId);
+    const card = String(cardId ?? "").trim();
+    if (!card) {
+      this.assignments.delete(id);
+      this.persist();
+      return;
+    }
+    if (!this.cards.has(card)) throw new Error("Die ausgewählte Karte existiert nicht.");
+    this.assignments.set(id, card);
+    this.persist();
+  }
+
+  /** Effective card id for a profile: explicit assignment, else legacy entry. */
+  assignedCardId(profileId: string): string {
+    const id = this.normalizeProfileId(profileId);
+    const assigned = this.assignments.get(id);
+    if (assigned && this.cards.has(assigned)) return assigned;
+    return this.entries.has(id) ? id : "";
+  }
+
+  getView(profileId: string): ProfilePaymentCardView {
+    const id = this.normalizeProfileId(profileId);
+    const resolved = this.resolveEntry(id);
+    if (!resolved) return { configured: false };
+    this.assertEncryptionAvailable();
+    const secret = this.decrypt(resolved.entry);
+    return this.toView(secret, resolved.entry.updatedAt);
+  }
+
+  toCheckoutPaymentSession(profileId: string, preference?: StoredPaymentPreference): CheckoutPaymentSession {
+    const method = preference?.method ?? "card";
+    const session: CheckoutPaymentSession = {
+      method,
+      label: preference?.label?.trim() || undefined
+    };
+    if (method !== "card") return session;
+
+    const id = this.normalizeProfileId(profileId);
+    const resolved = this.resolveEntry(id);
+    if (!resolved) throw new Error("Für dieses Profil sind keine verschlüsselten Kartendaten gespeichert.");
+    this.assertEncryptionAvailable();
+    const secret = this.decrypt(resolved.entry);
+    session.card = {
+      holderName: secret.holderName,
+      cardNumber: secret.cardNumber,
+      expiry: materializeExpiry(secret.expiryMonth, secret.expiryYear),
+      securityCode: secret.securityCode
+    };
+    return session;
+  }
+
+  /**
+   * Profile deleted: drop the assignment and any legacy profile-owned entry.
+   * Shared cards created through the manager stay available for other profiles.
+   */
+  delete(profileId: string): boolean {
+    const id = this.normalizeProfileId(profileId);
+    const deletedEntry = this.entries.delete(id);
+    const unassigned = this.assignments.delete(id);
+    const ownedCard = this.cards.delete(id);
+    if (deletedEntry || unassigned || ownedCard) this.persist();
+    return deletedEntry || ownedCard;
+  }
+
+  private resolveEntry(profileId: string): { entry: PaymentVaultEntry; cardId: string } | undefined {
+    const assigned = this.assignments.get(profileId);
+    if (assigned) {
+      const card = this.cards.get(assigned);
+      if (card) return { entry: card, cardId: assigned };
+    }
+    const legacy = this.entries.get(profileId);
+    if (legacy) return { entry: legacy, cardId: profileId };
+    return undefined;
+  }
+
+  private upsertCard(cardId: string, draft: ProfilePaymentCardDraft, label?: string): ProfilePaymentCardView {
+    this.assertEncryptionAvailable();
+    const id = this.normalizeProfileId(cardId);
+    const existing = this.readCardSecret(id);
 
     const requestedCardNumber = clean(draft.cardNumber);
     const cardNumber = !requestedCardNumber || MASKED_CARD_PATTERN.test(requestedCardNumber)
@@ -135,56 +282,25 @@ export class ProfilePaymentVault {
       throw new Error("Karteninhaber, Kartennummer, Ablaufmonat, Ablaufjahr und CVC/CVV sind erforderlich.");
     }
 
-    const secret: ProfileCardAutofill = {
-      holderName,
-      cardNumber,
-      expiryMonth,
-      expiryYear,
-      securityCode
-    };
+    const secret: ProfileCardAutofill = { holderName, cardNumber, expiryMonth, expiryYear, securityCode };
     const updatedAt = new Date().toISOString();
     const encrypted = this.crypto.encryptString(JSON.stringify(secret));
-    this.entries.set(id, { ciphertext: encrypted.toString("base64"), updatedAt });
-    this.persist();
+    const previousLabel = this.cards.get(id)?.label;
+    this.cards.set(id, {
+      ciphertext: encrypted.toString("base64"),
+      updatedAt,
+      label: clean(label) || previousLabel || undefined
+    });
     return this.toView(secret, updatedAt);
   }
 
-  getView(profileId: string): ProfilePaymentCardView {
-    const id = this.normalizeProfileId(profileId);
-    const entry = this.entries.get(id);
-    if (!entry) return { configured: false };
-    this.assertEncryptionAvailable();
-    const secret = this.decrypt(entry);
-    return this.toView(secret, entry.updatedAt);
-  }
-
-  toCheckoutPaymentSession(profileId: string, preference?: StoredPaymentPreference): CheckoutPaymentSession {
-    const method = preference?.method ?? "card";
-    const session: CheckoutPaymentSession = {
-      method,
-      label: preference?.label?.trim() || undefined
-    };
-    if (method !== "card") return session;
-
-    const id = this.normalizeProfileId(profileId);
-    const entry = this.entries.get(id);
-    if (!entry) throw new Error("Für dieses Profil sind keine verschlüsselten Kartendaten gespeichert.");
-    this.assertEncryptionAvailable();
-    const secret = this.decrypt(entry);
-    session.card = {
-      holderName: secret.holderName,
-      cardNumber: secret.cardNumber,
-      expiry: materializeExpiry(secret.expiryMonth, secret.expiryYear),
-      securityCode: secret.securityCode
-    };
-    return session;
-  }
-
-  delete(profileId: string): boolean {
-    const id = this.normalizeProfileId(profileId);
-    const deleted = this.entries.delete(id);
-    if (deleted) this.persist();
-    return deleted;
+  private readCardSecret(cardId: string): ProfileCardAutofill | undefined {
+    const card = this.cards.get(cardId);
+    if (card) {
+      this.assertEncryptionAvailable();
+      return this.decrypt(card);
+    }
+    return this.entries.get(cardId) ? this.readSecret(cardId) : undefined;
   }
 
   private normalizeProfileId(profileId: string): string {
@@ -236,11 +352,24 @@ export class ProfilePaymentVault {
   private load(): void {
     try {
       if (!fs.existsSync(this.storagePath)) return;
-      const parsed = JSON.parse(fs.readFileSync(this.storagePath, "utf8")) as Partial<PaymentVaultFile>;
-      if (parsed.version !== 1 || !parsed.entries || typeof parsed.entries !== "object") return;
-      for (const [profileId, entry] of Object.entries(parsed.entries)) {
+      const parsed = JSON.parse(fs.readFileSync(this.storagePath, "utf8")) as Partial<PaymentVaultFileV2>;
+      const version = Number(parsed.version);
+      if (version !== 1 && version !== 2) return;
+      for (const [profileId, entry] of Object.entries(parsed.entries ?? {})) {
         if (!entry || typeof entry.ciphertext !== "string" || typeof entry.updatedAt !== "string") continue;
         this.entries.set(profileId, entry);
+      }
+      for (const [cardId, entry] of Object.entries(parsed.cards ?? {})) {
+        if (!entry || typeof entry.ciphertext !== "string" || typeof entry.updatedAt !== "string") continue;
+        this.cards.set(cardId, {
+          ciphertext: entry.ciphertext,
+          updatedAt: entry.updatedAt,
+          label: typeof entry.label === "string" ? entry.label : undefined
+        });
+      }
+      for (const [profileId, cardId] of Object.entries(parsed.assignments ?? {})) {
+        if (typeof profileId !== "string" || typeof cardId !== "string" || !profileId || !cardId) continue;
+        this.assignments.set(profileId, cardId);
       }
     } catch {
       // A corrupt vault is treated as unavailable data; never fall back to plaintext storage.
@@ -250,9 +379,11 @@ export class ProfilePaymentVault {
   private persist(): void {
     const dir = path.dirname(this.storagePath);
     fs.mkdirSync(dir, { recursive: true });
-    const payload: PaymentVaultFile = {
-      version: 1,
-      entries: Object.fromEntries(this.entries.entries())
+    const payload: PaymentVaultFileV2 = {
+      version: 2,
+      cards: Object.fromEntries(this.cards.entries()),
+      assignments: Object.fromEntries(this.assignments.entries()),
+      ...(this.entries.size ? { entries: Object.fromEntries(this.entries.entries()) } : {})
     };
     const tempPath = `${this.storagePath}.tmp`;
     fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });

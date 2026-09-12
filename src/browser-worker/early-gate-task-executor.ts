@@ -7,6 +7,7 @@ import type { CommerceShop } from "../commerce/platforms";
 import type { AresProfile } from "../profiles/models";
 import type { CheckoutPaymentSession, PaymentPreparationResult } from "../payments/models";
 import type { BrowserWorker } from "./browser-worker";
+import type { BrowserContextHandle } from "./types";
 import type { Page } from "./types";
 import { BrowserQueueWaiter } from "./queue-waiter";
 import { CheckoutPaymentPreparer } from "./checkout-payment-preparer";
@@ -36,7 +37,7 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
     private readonly onTaskUpdate: (task: Task) => void = () => undefined
   ) {}
 
-  async execute(task: Task, paymentSession?: CheckoutPaymentSession): Promise<boolean> {
+  async execute(task: Task, paymentSession?: CheckoutPaymentSession, existingHandle?: BrowserContextHandle): Promise<boolean> {
     const shopId = task.config.shopId;
     const profileId = String(task.config.data?.["profileId"] ?? "").trim();
     const postQueue = task.config.data?.["postQueueDiscovery"] as Record<string, unknown> | undefined;
@@ -81,8 +82,7 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
     } : undefined;
 
     try {
-      await this.browserWorker.closeContext(task.id);
-      const handle = await this.browserWorker.createContext({
+      const handle = existingHandle ?? await this.browserWorker.createContext({
         taskId: task.id,
         targetId: shop.platform,
         userDataDir,
@@ -94,9 +94,15 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
         actionTimeoutMs: 15_000
       });
       const page = handle.page;
+      // The monitor lane can lose the page-target init script across the queue
+      // redirect/session recovery; re-apply the seeded fingerprint spoof so the
+      // page and its workers report the same values.
+      await (page as unknown as { reinstallStealthSpoof?: () => Promise<boolean> })
+        .reinstallStealthSpoof?.()
+        .catch(() => false);
       task.config.data = {
         ...(task.config.data ?? {}),
-        browserSession: { type: "seleniumbase-cdp", isolatedPerTask: true, userDataDir },
+        browserSession: { type: "seleniumbase-cdp", isolatedPerTask: true, userDataDir: handle.userDataDir },
         browserEnvironment: handle.environmentAudit
       };
       setEarlyGateRuntime(task, { activeArea: "browser-child", stage: "browser-child" });
@@ -105,12 +111,62 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
       const waiter = new BrowserQueueWaiter(page, task, current => this.emit(current), {
         maxWaitMs: this.queueMaxWaitMs(task),
         pollIntervalMs: 2_000,
-        releaseConfirmations: 2
+        releaseConfirmations: 2,
+        challengePollIntervalMs: 7_000,
+        challengeAction: () => {
+          const solver = (page as unknown as { solveCaptcha?: () => Promise<boolean> }).solveCaptcha;
+          return typeof solver === "function" ? solver.call(page) : undefined;
+        }
       });
       waiter.start();
       let navigationError: unknown;
+      // The early-gate monitor already confirmed the queue was released. Reloading
+      // the queue entry URL re-enters the waiting room (the page restarts its own
+      // timer), so the child lane enters the storefront start page instead. Product
+      // discovery navigates on to the new-releases category itself.
+      const gateHandoff = (task.config.data?.["browserGateHandoff"] ?? task.config.data?.["queueStatus"]) as Record<string, unknown> | undefined;
+      const queueAlreadyReleased = gateHandoff?.["released"] === true;
+      // Optional test-harness override (e.g. an offline slider gate). Defaults
+      // to the storefront start page.
+      const configuredEntry = String(task.config.data?.["postQueueEntryUrl"] ?? "").trim();
+      const entryUrl = queueAlreadyReleased
+        ? (() => { try { return new URL(configuredEntry || "/de-de", shop.baseUrl).toString(); } catch { return shop.baseUrl; } })()
+        : shop.baseUrl;
+      process.stderr.write(`[JOURNEY] child-entry released=${queueAlreadyReleased} configured="${configuredEntry}" entry=${entryUrl}\n`);
+      // Let the queue page's own post-release redirect fire first. Otherwise its
+      // pending timer can override a slow external navigation mid-load.
+      if (queueAlreadyReleased) await page.waitForTimeout(900).catch(() => undefined);
+      // The monitor lane's queue redirect / session recovery can drop the
+      // Page-target fingerprint registration, leaving the page on the real
+      // hardware fingerprint while workers stay spoofed. Re-register the seeded
+      // init script immediately before the child navigation so it applies to the
+      // storefront document (and survives target switches via the browser-level
+      // OOPIF root session).
+      await (page as unknown as { reinstallStealthSpoof?: () => Promise<boolean> })
+        .reinstallStealthSpoof?.()
+        .catch(() => false);
       try {
-        await page.goto(shop.baseUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        // Let the storefront start page actually render/be visible before the
+        // discovery lane navigates on to the new-releases category.
+        if (queueAlreadyReleased) await page.waitForTimeout(400).catch(() => undefined);
+        const solver = (page as unknown as { solveCaptcha?: () => Promise<boolean> }).solveCaptcha;
+        const solveChallenge = typeof solver === "function" ? () => solver.call(page) : undefined;
+        // Solve a challenge that appears right after the redirect. This must run
+        // before (and during) the optional harness hold, otherwise the first
+        // attempt only fires after the hold has already elapsed (~30s late).
+        await solveChallenge?.().catch(() => false);
+        // Optional test-harness hold (e.g. inspect an external analysis page).
+        // Keep probing for a challenge while it runs so a captcha that shows up
+        // mid-hold is solved immediately instead of after the hold ends.
+        const postQueueHoldMs = Number(task.config.data?.["postQueueHoldMs"] ?? 0);
+        if (Number.isFinite(postQueueHoldMs) && postQueueHoldMs > 0) {
+          const holdUntil = Date.now() + Math.min(300_000, postQueueHoldMs);
+          while (Date.now() < holdUntil) {
+            await solveChallenge?.().catch(() => false);
+            await page.waitForTimeout(Math.min(5_000, Math.max(0, holdUntil - Date.now()))).catch(() => undefined);
+          }
+        }
       } catch (error) {
         navigationError = error;
       }
@@ -256,6 +312,10 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
     profile: AresProfile,
     paymentSession?: CheckoutPaymentSession
   ): Promise<void> {
+    // The Global-E checkout can need several minutes before its fields exist
+    // and are usable (blocking loading spinner). Wait patiently for them; the
+    // preparation clock starts only after the form is actually ready.
+    await this.waitForCheckoutFields(task, session, page);
     const deadline = Date.now() + this.checkoutPreparationMaxMs(task);
     let profileReady = false;
     let lastProfile: SemanticCheckoutPreparationResult | undefined;
@@ -278,7 +338,14 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
       const paymentReadiness = evaluatePaymentReadiness(paymentSession, lastPayment);
       lastPaymentReason = paymentReadiness.reason;
       const finalControlReady = await journey.isReadyForFinalSubmit(page, shop).catch(() => false);
-      const reviewReady = profileReady && paymentReadiness.ready && finalControlReady;
+      // The irreversible final control is re-evaluated at submit time by the
+      // guarded final-purchase loop (submitOrder -> findButton). The checkout
+      // stage must not depend on it: shops commonly enable the purchase button
+      // only after payment/consent, and offline harnesses never run the live
+      // payment scripts, so requiring it would strand the flow in `cart`.
+      const paymentSatisfied = paymentReadiness.ready || !paymentSession;
+      const preparationReady = profileReady && paymentSatisfied;
+      const reviewReady = preparationReady && finalControlReady;
       this.publishCheckoutPreparation(task, {
         phase: reviewReady ? "purchase-ready" : "preparing",
         profileReady,
@@ -288,7 +355,7 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
         profile: lastProfile,
         payment: lastPayment
       });
-      if (reviewReady) return;
+      if (preparationReady) return;
 
       const advanced = await journey.advanceCheckout(page, shop).catch(() => false);
       if (!advanced) await this.delay(700, session.controller.signal);
@@ -297,7 +364,7 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
     if (session.controller.signal.aborted) return;
     const reason = !profileReady
       ? "Checkout-Adresse/Profil wurde nicht vollständig bestätigt."
-      : lastPaymentReason !== "ready"
+      : paymentSession && lastPaymentReason !== "ready"
         ? `Checkout-Zahlung ist nicht kaufbereit (${lastPaymentReason}).`
         : "Finaler kaufbereiter Review-/Submit-Zustand wurde nicht erreicht.";
     throw new Error(reason);
@@ -423,6 +490,20 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
   private checkoutPreparationMaxMs(task: Task): number {
     const raw = Number(task.config.data?.["checkoutPreparationMaxMs"] ?? 10 * 60_000);
     return Number.isFinite(raw) ? Math.min(30 * 60_000, Math.max(30_000, raw)) : 10 * 60_000;
+  }
+
+  private async waitForCheckoutFields(task: Task, session: ActiveDiscoverySession, page: Page): Promise<void> {
+    const deadline = Date.now() + this.checkoutFieldLoadMaxMs(task);
+    while (!session.controller.signal.aborted && Date.now() < deadline) {
+      const count = await this.checkoutPreparer.observeCount(page).catch(() => 0);
+      if (count >= 3 && await this.checkoutPreparer.observeReady(page).catch(() => false)) return;
+      await this.delay(500, session.controller.signal);
+    }
+  }
+
+  private checkoutFieldLoadMaxMs(task: Task): number {
+    const raw = Number(task.config.data?.["checkoutFieldLoadMaxMs"] ?? 20 * 60_000);
+    return Number.isFinite(raw) ? Math.min(30 * 60_000, Math.max(15_000, raw)) : 20 * 60_000;
   }
 
   private orderConfirmationAttempts(task: Task): number {

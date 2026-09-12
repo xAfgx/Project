@@ -2,7 +2,7 @@ import { Task, TaskConfig, TaskLogEntry, RuntimeLogEntry, TaskState } from "../m
 import type { ProductMonitorEvent } from "../monitor/models";
 
 export interface ITaskExecutor {
-  execute(task: Task): Promise<boolean>;
+  execute(task: Task): Promise<boolean | { success: boolean; handle?: import("../browser-worker/types").BrowserContextHandle }>;
   cancelTask?(taskId: string): Promise<void>;
   updateDiscoveryKeywords?(taskId: string, keywords: string[]): Promise<string[]>;
   setFinalPurchaseAllowed?(allowed: boolean): Promise<void>;

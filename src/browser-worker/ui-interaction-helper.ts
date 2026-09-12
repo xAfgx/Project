@@ -23,6 +23,15 @@ export interface UiFillOptions {
   attempts?: number;
   seed?: number | string;
   expected?: InteractionOutcomeExpectation;
+  verifyTimeoutMs?: number;
+}
+
+export interface UiTypeOptions extends UiFillOptions {
+  interKeyDelayMinMs?: number;
+  interKeyDelayMaxMs?: number;
+  clear?: boolean;
+  click?: boolean;
+  typoProbability?: number;
 }
 
 export interface UiSelectOptions extends UiFillOptions {}
@@ -35,6 +44,7 @@ export interface UiInteractionHelper {
   moveToPoint(point: UiPoint, options?: UiMoveOptions): Promise<void>;
   click(target: Locator, options?: UiClickOptions): Promise<void>;
   fill(target: Locator, value: string, options?: UiFillOptions): Promise<void>;
+  type(target: Locator, value: string, options?: UiTypeOptions): Promise<void>;
   select(target: Locator, value: string, options?: UiSelectOptions): Promise<void>;
   focus(target: Locator, options?: UiFocusOptions): Promise<void>;
   hover(target: Locator, options?: UiHoverOptions): Promise<void>;
@@ -92,11 +102,26 @@ export class GhostCursorUiInteractionHelper implements UiInteractionHelper {
     this.assertSuccess("fill", result.success, result.failureReason);
   }
 
+  async type(target: Locator, value: string, options: UiTypeOptions = {}): Promise<void> {
+    const result = await this.engine.type(target, value, {
+      attempts: options.attempts,
+      seed: options.seed ?? `${this.seedNamespace}:type`,
+      expected: options.expected,
+      interKeyDelayMinMs: options.interKeyDelayMinMs,
+      interKeyDelayMaxMs: options.interKeyDelayMaxMs,
+      clear: options.clear,
+      click: options.click,
+      typoProbability: options.typoProbability
+    });
+    this.assertSuccess("type", result.success, result.failureReason);
+  }
+
   async select(target: Locator, value: string, options: UiSelectOptions = {}): Promise<void> {
     const result = await this.engine.select(target, value, {
       attempts: options.attempts,
       seed: options.seed ?? `${this.seedNamespace}:select`,
-      expected: options.expected
+      expected: options.expected,
+      verifyTimeoutMs: options.verifyTimeoutMs
     });
     this.assertSuccess("select", result.success, result.failureReason);
   }

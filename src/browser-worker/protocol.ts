@@ -34,6 +34,15 @@ export interface SetFinalPurchasePermissionRequest {
   allowed: boolean;
 }
 
+export interface SetCaptchaConfigRequest {
+  type: "set-captcha-config";
+  requestId: string;
+  captcha: {
+    mode: "siglip" | "siglip-api" | "api";
+    keys: Record<string, string>;
+  };
+}
+
 export interface HealthRequest {
   type: "health";
   requestId: string;
@@ -47,6 +56,7 @@ export interface ShutdownRequest {
 export type BrowserWorkerRequest =
   | ExecuteTaskRequest
   | CancelTaskRequest
+  | SetCaptchaConfigRequest
   | UpdateDiscoveryKeywordsRequest
   | SetFinalPurchasePermissionRequest
   | HealthRequest

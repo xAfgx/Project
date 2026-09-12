@@ -36,6 +36,7 @@ import {
 } from "./capmonster-api-key-health";
 import { ProfileBrowserController } from "./profile-browser-controller";
 import { registerProfilePaymentIpc } from "./profile-payment-controller";
+import { registerCaptchaProviderIpc } from "./captcha-provider-controller";
 
 let mainWindow: BrowserWindow | null = null;
 let orchestrator: TaskOrchestrator;
@@ -239,6 +240,9 @@ async function createBackend(): Promise<void> {
   profileRepository.setStoragePath(path.join(userData, "profiles.json"));
   proxyRepository.setStoragePath(path.join(userData, "proxies.json"));
   profilePaymentVault = registerProfilePaymentIpc(userData);
+  registerCaptchaProviderIpc(userData, config => {
+    void browserWorker?.setCaptchaConfig(config as { mode: "siglip" | "siglip-api" | "api"; keys: Record<string, string> }).catch(() => undefined);
+  });
   loadShops();
 
   browserProfileRoot = path.join(userData, "browser-profiles");

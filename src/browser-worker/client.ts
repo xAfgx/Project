@@ -12,6 +12,11 @@ import type { RuntimeShop } from "./runtime-types";
 import type { BrowserWorkerHealth } from "./types";
 import type { BrowserWorkerRequest, BrowserWorkerResponse } from "./protocol";
 
+export interface CaptchaRuntimeConfig {
+  mode: "siglip" | "siglip-api" | "api";
+  keys: Record<string, string>;
+}
+
 interface PendingRequest {
   resolve: (value: BrowserWorkerResponse) => void;
   reject: (error: Error) => void;
@@ -69,6 +74,7 @@ export class BrowserWorkerProcessClient {
   private restartCount = 0;
   private lastFailure?: string;
   private desiredFinalPurchaseAllowed = false;
+  private desiredCaptchaConfig?: CaptchaRuntimeConfig;
 
   constructor(
     private readonly requestTimeoutMs: number,
@@ -126,6 +132,13 @@ export class BrowserWorkerProcessClient {
     if (!this.child || this.child.killed) return;
     await this.ensureReady();
     await this.syncFinalPurchasePermission();
+  }
+
+  async setCaptchaConfig(config: CaptchaRuntimeConfig): Promise<void> {
+    this.desiredCaptchaConfig = config;
+    if (!this.child || this.child.killed) return;
+    await this.ensureReady();
+    await this.request({ type: "set-captcha-config", requestId: randomUUID(), captcha: config }, 10_000);
   }
 
   async cancelTask(taskId: string): Promise<void> {
@@ -382,6 +395,7 @@ export class BrowserWorkerPoolClient implements ITaskExecutor {
   private readonly getProxy: (proxyId: string) => AresProxy | undefined;
   private readonly getCookieSnapshot: (profileId: string, snapshotId: string) => ProfileCookieSnapshotCookie[] | undefined;
   private allowFinalPurchase = false;
+  private desiredCaptchaConfig?: CaptchaRuntimeConfig;
 
   constructor(
     private readonly getShop: (shopId: string) => RuntimeShop | undefined,
@@ -451,6 +465,7 @@ export class BrowserWorkerPoolClient implements ITaskExecutor {
     const client = this.taskOwners.get(task.id) ?? this.leastLoadedClient();
     this.taskOwners.set(task.id, client);
     await client.setFinalPurchaseAllowed(this.allowFinalPurchase);
+    if (this.desiredCaptchaConfig) await client.setCaptchaConfig(this.desiredCaptchaConfig).catch(() => undefined);
     try { return await client.execute(task, shop, effectiveProfile, cookieSnapshot); }
     catch (error) { task.lastError = error instanceof Error ? error.message : String(error); return false; }
     finally { this.taskOwners.delete(task.id); }
@@ -464,6 +479,11 @@ export class BrowserWorkerPoolClient implements ITaskExecutor {
   async setFinalPurchaseAllowed(allowed: boolean): Promise<void> {
     this.allowFinalPurchase = allowed === true;
     await Promise.all(this.clients.map(client => client.setFinalPurchaseAllowed(this.allowFinalPurchase)));
+  }
+
+  async setCaptchaConfig(config: CaptchaRuntimeConfig): Promise<void> {
+    this.desiredCaptchaConfig = config;
+    await Promise.all(this.clients.map(client => client.setCaptchaConfig(config).catch(() => undefined)));
   }
   async cancelTask(taskId: string): Promise<void> {
     const owner = this.taskOwners.get(taskId);

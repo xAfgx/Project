@@ -24,6 +24,7 @@ Usage after a navigation::
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -31,6 +32,8 @@ import mycdp
 
 DEFAULT_SETTLE_SECONDS = 0.2
 DEFAULT_READY_SETTLE_SECONDS = 2.0
+DEFAULT_PROBE_TIMEOUT_SECONDS = 1.5
+DEFAULT_TAB_CLOSE_TIMEOUT_SECONDS = 2.0
 EVENT_DOMAINS = ("page", "runtime", "network")
 _READY_STATES = ("interactive", "complete")
 
@@ -97,8 +100,15 @@ def ensure_live_cdp_session(
     sb = seleniumbase_cdp
     driver = _unwrap_driver(sb)
     total_attempts = max(1, int(attempts))
+    started_at = time.monotonic()
+    old_target_id = _target_id(_active_tab(sb))
 
     probe_ok, probe_reason = _probe_document(sb)
+    cleanup = "none"
+    if not probe_ok and probe_reason != "no-evaluator":
+        # Session is dead/stale: reset ONLY the affected tab connection so the
+        # existing rebind path can re-open it. No global connection reset.
+        cleanup = _cleanup_tab_connection(sb)
     result: Dict[str, Any] = {
         "recovered": False,
         "cdpConnected": bool(probe_ok),
@@ -107,7 +117,12 @@ def ensure_live_cdp_session(
         "frameContext": "not-run",
         "attempts": 0,
         "probe": probe_reason,
-        "targetId": _target_id(_active_tab(sb)),
+        "probeTimeoutSeconds": DEFAULT_PROBE_TIMEOUT_SECONDS,
+        "oldTargetId": old_target_id,
+        "newTargetId": old_target_id,
+        "cleanup": cleanup,
+        "recoveryMs": 0,
+        "targetId": old_target_id,
         "url": _current_url(sb, expected_url),
         "error": None,
     }
@@ -116,7 +131,9 @@ def ensure_live_cdp_session(
         if reset_frame_context:
             result["frameContext"] = _reset_frame_context(sb, driver)
         result["targetId"] = _target_id(_active_tab(sb))
+        result["newTargetId"] = result["targetId"]
         result["url"] = _current_url(sb, expected_url)
+        result["recoveryMs"] = int((time.monotonic() - started_at) * 1000.0)
         return result
 
     last_error: Optional[str] = None
@@ -136,7 +153,9 @@ def ensure_live_cdp_session(
         if reset_frame_context:
             result["frameContext"] = _reset_frame_context(sb, driver)
         result["targetId"] = _target_id(_active_tab(sb))
+        result["newTargetId"] = result["targetId"]
         result["url"] = _current_url(sb, expected_url)
+        result["recoveryMs"] = int((time.monotonic() - started_at) * 1000.0)
         return result
 
     if callable(on_recovered):
@@ -148,7 +167,9 @@ def ensure_live_cdp_session(
         result["frameContext"] = _reset_frame_context(sb, driver)
     result["recovered"] = True
     result["targetId"] = _target_id(_active_tab(sb))
+    result["newTargetId"] = result["targetId"]
     result["url"] = _current_url(sb, expected_url)
+    result["recoveryMs"] = int((time.monotonic() - started_at) * 1000.0)
     return result
 
 
@@ -339,6 +360,33 @@ def _reset_frame_context(sb: Any, driver: Any) -> str:
 
 
 def _probe_document(sb: Any) -> Tuple[bool, str]:
+    """Bounded liveness probe on the underlying async CDP operation.
+
+    ``sb.evaluate()`` is a synchronous wrapper around
+    ``loop.run_until_complete(tab.evaluate(...))``; wrapping the sync call in
+    ``asyncio.wait_for`` would block before a coroutine exists. Instead the
+    underlying ``Tab.evaluate`` coroutine is bounded here. This function never
+    rebinds anything - cleanup/rebind stays in ``ensure_live_cdp_session``.
+    """
+    tab = _active_tab(sb)
+    loop = _event_loop(sb)
+    evaluate = getattr(tab, "evaluate", None) if tab is not None else None
+    if callable(evaluate) and loop is not None:
+        async def probe():
+            return await asyncio.wait_for(
+                evaluate("1"),
+                timeout=DEFAULT_PROBE_TIMEOUT_SECONDS,
+            )
+        try:
+            value = loop.run_until_complete(probe())
+        except (asyncio.TimeoutError, TimeoutError):
+            return False, "probe-timeout"
+        except Exception as exc:
+            return False, f"probe-exception:{type(exc).__name__}"
+        if value is None:
+            return False, "probe-null"
+        return True, "probe-ok"
+
     evaluator = getattr(sb, "evaluate", None)
     if not callable(evaluator):
         return True, "no-evaluator"
@@ -349,6 +397,54 @@ def _probe_document(sb: Any) -> Tuple[bool, str]:
     if value is None:
         return False, "probe-null"
     return True, "probe-ok"
+
+
+def _cleanup_tab_connection(sb: Any) -> str:
+    """Hard-reset ONLY the affected tab connection, never the whole browser.
+
+    Clearing the mapper is required because a ``wait_for`` cancellation is a
+    ``BaseException`` and therefore bypasses SeleniumBase's own ``aclose()``
+    cleanup, leaving a stale in-flight transaction plus a half-open websocket.
+    """
+    tab = _active_tab(sb)
+    loop = _event_loop(sb)
+    if tab is None or loop is None:
+        return "unavailable"
+
+    try:
+        mapper = getattr(tab, "mapper", None)
+        if hasattr(mapper, "clear"):
+            mapper.clear()
+    except Exception:
+        pass
+
+    try:
+        loop.run_until_complete(asyncio.sleep(0))
+    except Exception:
+        pass
+
+    closed = "skipped"
+    close = getattr(tab, "aclose", None)
+    if callable(close):
+        async def _close():
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+        try:
+            loop.run_until_complete(
+                asyncio.wait_for(_close(), timeout=DEFAULT_TAB_CLOSE_TIMEOUT_SECONDS)
+            )
+            closed = "aclose"
+        except Exception as exc:
+            closed = f"aclose-error:{type(exc).__name__}"
+
+    for attribute in ("websocket", "listener"):
+        try:
+            if hasattr(tab, attribute):
+                setattr(tab, attribute, None)
+        except Exception:
+            pass
+    return closed
 
 
 def _probe_ready_state(sb: Any) -> Optional[str]:
@@ -417,6 +513,19 @@ def _active_tab(sb: Any) -> Any:
         except Exception:
             pass
     return getattr(sb, "page", None)
+
+
+def _tab_is_closed(tab: Any) -> bool:
+    """True only when the tab's websocket is really gone, not merely slow."""
+    if tab is None:
+        return True
+    closed = getattr(tab, "closed", None)
+    if closed is None:
+        return getattr(tab, "websocket", None) is None
+    try:
+        return bool(closed)
+    except Exception:
+        return False
 
 
 def _select_live_tab(driver: Any, current: Any, expected_url: Optional[str]) -> Any:

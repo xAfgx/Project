@@ -47,7 +47,14 @@ const DISABLE_FEATURES = "--disable-features=NetworkPrediction";
 const DNS_OVER_HTTPS_MODE = "--dns-over-https-mode=secure";
 const DNS_OVER_HTTPS_TEMPLATES = "--dns-over-https-templates=https://dns.google/dns-query";
 const ECH_FLAGS = [DNS_OVER_HTTPS_MODE, DNS_OVER_HTTPS_TEMPLATES];
-const PROFILE_PRE_CLOSE_SETTLE_MS = 800;
+const PROFILE_PRE_CLOSE_SETTLE_MS = 1500;
+const DEFAULT_SB_START_TIMEOUT_MS = 120_000;
+const DEFAULT_SB_CLOSE_EXIT_WAIT_MS = 15_000;
+
+function sbStartTimeoutMs(): number {
+  const raw = Number(process.env["ARES_SB_START_TIMEOUT_MS"] ?? "");
+  return Number.isFinite(raw) && raw >= 15_000 ? raw : DEFAULT_SB_START_TIMEOUT_MS;
+}
 
 // Safe headed Chrome flags - compatible with all Windows GPU configs
 // Removed: --enable-unsafe-webgpu (crashes Chrome on some drivers)
@@ -214,7 +221,7 @@ export class SeleniumBaseBrowserWorker implements BrowserWorker {
         browserArgs: browserArgs(config),
         locale: config.locale,
         timezoneId: config.timezoneId
-      }, 35_000);
+      }, sbStartTimeoutMs());
 
       const page = new SeleniumBaseRpcPage(transport);
       page["passiveQueueSnapshot"] = async () => {
@@ -239,7 +246,7 @@ export class SeleniumBaseBrowserWorker implements BrowserWorker {
         },
         close: async () => {
           await page.closeTransport();
-          await this.waitForExit(runningChild, 5_000);
+          await this.waitForExit(runningChild, DEFAULT_SB_CLOSE_EXIT_WAIT_MS);
           if (runningChild.exitCode == null) runningChild.kill("SIGKILL");
         }
       };

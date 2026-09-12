@@ -10,6 +10,11 @@ const api = {
   getProfilePayment: (profileId: string) => ipcRenderer.invoke("get-profile-payment", profileId),
   saveProfilePayment: (profileId: string, payment: unknown) => ipcRenderer.invoke("save-profile-payment", profileId, payment),
   deleteProfilePayment: (profileId: string) => ipcRenderer.invoke("delete-profile-payment", profileId),
+  listPaymentCards: () => ipcRenderer.invoke("list-payment-cards"),
+  savePaymentCard: (cardId: string, payment: unknown, label?: string) => ipcRenderer.invoke("save-payment-card", cardId, payment, label),
+  deletePaymentCard: (cardId: string) => ipcRenderer.invoke("delete-payment-card", cardId),
+  getProfilePaymentCard: (profileId: string) => ipcRenderer.invoke("get-profile-payment-card", profileId),
+  assignProfilePaymentCard: (profileId: string, cardId: string | null) => ipcRenderer.invoke("assign-profile-payment-card", profileId, cardId),
   getProfileBrowserStatus: (profileId: string) => ipcRenderer.invoke("get-profile-browser-status", profileId),
   openProfileBrowser: (profileId: string, startUrl?: string) => ipcRenderer.invoke("open-profile-browser", profileId, startUrl),
   closeProfileBrowser: (profileId: string) => ipcRenderer.invoke("close-profile-browser", profileId),
@@ -53,6 +58,12 @@ const api = {
   getProductMonitorEvents: (taskId: string, limit = 100) => ipcRenderer.invoke("get-product-monitor-events", taskId, limit),
   getSystemStatus: () => ipcRenderer.invoke("get-system-status"),
   testCapmonsterApiKey: () => ipcRenderer.invoke("test-capmonster-api-key"),
+  listCaptchaProviders: () => ipcRenderer.invoke("list-captcha-providers"),
+  saveCaptchaProvider: (id: string, input: unknown) => ipcRenderer.invoke("save-captcha-provider", id, input),
+  deleteCaptchaProvider: (id: string) => ipcRenderer.invoke("delete-captcha-provider", id),
+  testCaptchaProvider: (id: string) => ipcRenderer.invoke("test-captcha-provider", id),
+  getCaptchaMode: () => ipcRenderer.invoke("get-captcha-mode"),
+  setCaptchaMode: (mode: string) => ipcRenderer.invoke("set-captcha-mode", mode),
   onTaskStatusUpdate: (callback: (task: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
     taskStatusListeners.set(callback, listener);

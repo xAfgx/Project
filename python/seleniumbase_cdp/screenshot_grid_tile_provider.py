@@ -168,6 +168,13 @@ class ScreenshotGridTileProvider:
             top = max(0, min(image_height, int(round(y * scale_y))))
             right = max(left + 1, min(image_width, int(round((x + width) * scale_x))))
             bottom = max(top + 1, min(image_height, int(round((y + height) * scale_y))))
+            # Small margin so tile edges/borders are not cut off. Capped at ~2%
+            # of the tile so adjacent tiles cannot bleed into each other.
+            pad = max(1, int(round(min(width * scale_x, height * scale_y) * 0.02)))
+            left = max(0, left - pad)
+            top = max(0, top - pad)
+            right = min(image_width, right + pad)
+            bottom = min(image_height, bottom + pad)
             if left >= image_width or top >= image_height or right <= left or bottom <= top:
                 return []
             result.append((left, top, right, bottom))

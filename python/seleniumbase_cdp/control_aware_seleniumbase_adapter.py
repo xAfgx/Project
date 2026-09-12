@@ -5,7 +5,6 @@ import time
 from typing import Any, Callable, Dict, Iterable, List
 
 from cdp_session_recovery import (
-    captcha_frame_recovery,
     ensure_live_cdp_session,
     wait_for_document_ready,
 )
@@ -125,6 +124,11 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
             self._passive_observation_depth = max(0, self._passive_observation_depth - 1)
 
     def poll_runtime(self) -> None:
+        if getattr(self, "_monitor_mode", False):
+            # Monitor workers only observe the queue DOM. Skip the challenge
+            # watchdog + deferral/orchestrator scheduling so the synchronous
+            # command loop stays responsive and `close` is never starved.
+            return
         if self._runtime_poll_in_progress:
             return
         self._runtime_poll_in_progress = True
@@ -168,6 +172,7 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
     def goto(self, url: str) -> None:
         """Navigate synchronously, but defer expensive automatic visual work."""
         self.note_control_activity()
+        self._enable_focus_emulation()
         pipeline = (
             ("sb-goto", lambda: self._sb.goto(url)),
             (
@@ -176,7 +181,7 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
             ),
             ("document-ready-settle", lambda: wait_for_document_ready(self._sb)),
             ("challenge-stability", self._challenge_tracker.wait_for_stable_challenge),
-            ("captcha-frame-recovery", lambda: captcha_frame_recovery(self._sb)),
+            ("captcha-frame-recovery", self._captcha_frame_recovery_if_challenge),
         )
         for stage, action in pipeline:
             started = time.monotonic()
@@ -187,6 +192,10 @@ class ControlAwareSeleniumBaseCdpAdapter(SeleniumBaseCdpAdapter):
                 self._append_goto_trace(stage, status="error", started=started, error=exc)
                 raise
             self._append_goto_trace(stage, status="exit", started=started)
+
+        reset_consent = getattr(self._visual_interactions, "reset_after_navigation", None)
+        if callable(reset_consent):
+            reset_consent()
 
         started = time.monotonic()
         self._append_goto_trace("watchdog-baseline", status="enter")

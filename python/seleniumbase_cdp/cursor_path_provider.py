@@ -35,10 +35,10 @@ class CursorPathProvider:
     def plan(self, start: Point, end: Point, *, preferred: str = "ghost-cursor") -> Dict[str, Any]:
         start = (float(start[0]), float(start[1]))
         end = (float(end[0]), float(end[1]))
-        # The external GhostCursor helper owns its own randomness. A task-scoped
-        # replay seed therefore uses the existing Python Bezier path so the
-        # complete motion stream remains deterministic for that task id.
-        external = None if self._runtime_seeded else self._external(start, end, preferred=preferred)
+        # Prefer the external GhostCursor helper for its organic motion. The
+        # task-scoped seed still keeps the Python Bezier fallback (and the
+        # sessionized tremor) deterministic when the helper is unavailable.
+        external = self._external(start, end, preferred=preferred)
         if external:
             external["points"] = self._sessionize_points(external.get("points") or [], start, end)
             return external

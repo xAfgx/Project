@@ -3,6 +3,7 @@ import type { UiInteractionHelper } from "./ui-interaction-helper";
 import {
   collectFieldDescriptors,
   fieldLocator,
+  type FieldHost,
   type FieldSemanticResolver
 } from "./field-semantic-resolver";
 import {
@@ -73,38 +74,78 @@ export class SemanticFieldAutofill {
     // Shop compatibility fallbacks may still fill deterministic known selectors.
     if (!semanticAutofillEnabled(values)) return;
 
-    const descriptors = await collectFieldDescriptors(this.page);
-    const resolved = await this.resolver.resolve(descriptors);
-    const ranked = [...resolved].sort((left, right) => right.confidence - left.confidence);
+    // Checkout forms are frequently rendered inside a nested (OOPIF/srcdoc)
+    // frame, so every frame is resolved and written independently. Indices are
+    // frame-local: collectFieldDescriptors and fieldLocator must use the same
+    // host for a given batch.
+    for (const host of this.fieldHosts()) {
+      const descriptors = await collectFieldDescriptors(host).catch(() => []);
+      if (!descriptors.length) continue;
+      const resolved = await this.resolver.resolve(descriptors);
+      // DOM order, not confidence order: the form is filled top-to-bottom the
+      // way a person would move through it.
+      for (const item of resolved) {
+        const resolution: SemanticCheckoutTraceResolution = {
+          resolverSource: {
+            intent: item.source.intent,
+            context: item.source.context
+          },
+          confidence: item.confidence
+        };
 
-    for (const item of ranked) {
-      const resolution: SemanticCheckoutTraceResolution = {
-        resolverSource: {
-          intent: item.source.intent,
-          context: item.source.context
-        },
-        confidence: item.confidence
-      };
+        if (item.target.intent === "unknown") {
+          this.trace?.record({
+            target: item.target,
+            ...resolution,
+            valueAvailable: false,
+            action: "resolve",
+            result: "unresolved"
+          });
+          continue;
+        }
 
-      if (item.target.intent === "unknown") {
-        this.trace?.record({
-          target: item.target,
-          ...resolution,
-          valueAvailable: false,
-          action: "resolve",
-          result: "unresolved"
-        });
-        continue;
-      }
-
-      const locator = fieldLocator(this.page, item.descriptor.index);
-      const value = values.valueFor(item.target);
-      if (item.descriptor.tagName === "select") {
-        await this.selectLocator(item.target, locator, value, { kind: "semantic", resolution }).catch(() => false);
-      } else {
-        await this.fillLocator(item.target, locator, value, { kind: "semantic", resolution }).catch(() => false);
+        const locator = fieldLocator(host, item.descriptor.index);
+        const value = values.valueFor(item.target);
+        if (item.descriptor.tagName === "select") {
+          await this.selectLocator(item.target, locator, value, { kind: "semantic", resolution }).catch(() => false);
+        } else {
+          await this.fillLocator(item.target, locator, value, { kind: "semantic", resolution }).catch(() => false);
+        }
       }
     }
+  }
+
+  private fieldHosts(): FieldHost[] {
+    const frames = typeof this.page.frames === "function" ? this.page.frames() : [];
+    return frames.length ? frames : [this.page];
+  }
+
+  /** Visible form controls across the page and every frame (load gate). */
+  async observeCount(): Promise<number> {
+    let total = 0;
+    for (const host of this.fieldHosts()) {
+      const descriptors = await collectFieldDescriptors(host).catch(() => []);
+      total += descriptors.length;
+    }
+    return total;
+  }
+
+  /**
+   * True when at least one real checkout control (not the site search box) is
+   * enabled. The Global-E checkout shows a blocking loading spinner first and
+   * keeps its fields disabled until it is gone, so autofill must wait for this.
+   */
+  async observeReady(): Promise<boolean> {
+    for (const host of this.fieldHosts()) {
+      const descriptors = await collectFieldDescriptors(host).catch(() => []);
+      for (const descriptor of descriptors) {
+        if (descriptor.inputType === "search") continue;
+        if (!descriptor.name && !descriptor.id && !descriptor.autocomplete) continue;
+        const locator = fieldLocator(host, descriptor.index);
+        if (await locator.isEnabled({ timeout: 120 }).catch(() => false)) return true;
+      }
+    }
+    return false;
   }
 
   async fillLocator(
@@ -178,9 +219,16 @@ export class SemanticFieldAutofill {
     }
 
     try {
-      await this.interactions.fill(locator, desired, {
+      // Type character-by-character through the native input pipeline instead of
+      // pasting the value. This keeps per-keystroke formatters/masks working and
+      // avoids synthetic isTrusted=false input events.
+      await this.interactions.type(locator, desired, {
         attempts: 2,
-        seed: `semantic-fill:${key}`
+        seed: `semantic-type:${key}`,
+        interKeyDelayMinMs: 45,
+        interKeyDelayMaxMs: 120,
+        // Occasional self-corrected typo so the entry looks human.
+        typoProbability: 0.22
       });
     } catch (error) {
       this.trace?.record({
@@ -288,8 +336,12 @@ export class SemanticFieldAutofill {
     }
 
     try {
+      // Selects fail fast: when the option value/format does not exist (e.g. a
+      // numeric country list vs. an ISO code) there is no point retrying for
+      // seconds. This removes the long pause between ZIP and phone.
       await this.interactions.select(locator, desired, {
-        attempts: 2,
+        attempts: 1,
+        verifyTimeoutMs: 500,
         seed: `semantic-select:${key}`
       });
     } catch (error) {

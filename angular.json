@@ -19,8 +19,8 @@
             "polyfills": "src/polyfills.ts",
             "tsConfig": "tsconfig.app.json",
             "inlineStyleLanguage": "scss",
-            "assets": [],
-            "styles": ["src/app/app.component.scss", "src/app/early-gate-ui.scss", "src/app/runtime-control/runtime-control-extras.scss", "src/app/navigation-cleanup.scss", "src/app/cosmic-theme.scss"],
+            "assets": ["src/assets"],
+            "styles": ["src/app/app.component.scss", "src/app/early-gate-ui.scss", "src/app/runtime-control/runtime-control-extras.scss", "src/app/navigation-cleanup.scss", "src/app/cosmic-theme.scss", "src/app/modules-ui.scss"],
             "scripts": []
           },
           "configurations": {

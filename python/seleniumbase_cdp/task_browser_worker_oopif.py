@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import time
 from typing import Any
 
 import task_browser_worker_oopif_impl as impl
@@ -49,6 +51,8 @@ def _child_frame_id(self: Any, frame_id: str, selector: str) -> str:
                 if not child_frame_id:
                     raise LookupError(f"CDP frameId is unavailable at {selector}")
                 self._wait_for_route(child_frame_id, timeout=2.0)
+                with self._lock:
+                    self._frame_parents[child_frame_id] = str(frame_id)
                 return child_frame_id
             finally:
                 try:
@@ -250,16 +254,77 @@ def _bump_document_epoch(registry: Any, frame_id: str) -> int:
     return int(epochs[frame_id])
 
 
+def _schedule_worker_fingerprint(registry: Any, session_id: str) -> None:
+    """Inject the seeded fingerprint script into a freshly attached Worker.
+
+    Target.setAutoAttach(waitForDebuggerOnStart=True) pauses the worker until
+    Runtime.runIfWaitingForDebugger, so the script must be evaluated first and
+    the worker always resumed afterwards.
+    """
+    script = str(getattr(registry, "_ares_fingerprint_script", "") or "")
+    loop = getattr(registry, "_loop", None)
+
+    def log(message: str) -> None:
+        try:
+            path = os.path.join(tempfile.gettempdir(), "ares-worker-fp.log")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{time.time():.3f} {message}\n")
+        except Exception:
+            pass
+
+    if not script or loop is None:
+        log(f"worker-skip script={bool(script)} loop={loop is not None} session={session_id[:8]}")
+        return
+
+    async def inject() -> None:
+        try:
+            await registry._send_command(
+                "Runtime.evaluate",
+                {"expression": script, "returnByValue": False},
+                session_id=session_id,
+                timeout=5.0,
+            )
+            log(f"worker-injected session={session_id[:8]}")
+        except Exception as exc:
+            log(f"worker-eval-failed {type(exc).__name__}:{str(exc)[:160]}")
+        finally:
+            try:
+                await registry._send_command(
+                    "Runtime.runIfWaitingForDebugger",
+                    {},
+                    session_id=session_id,
+                    timeout=5.0,
+                )
+            except Exception:
+                pass
+
+    try:
+        loop.create_task(inject())
+    except Exception as exc:
+        log(f"worker-task-failed {type(exc).__name__}:{str(exc)[:160]}")
+
+
 def _handle_event_with_frame_lifecycle(self: Any, message: dict[str, Any]) -> None:
     """Extend the existing flattened registry with document identity events."""
     _original_registry_handle_event(self, message)
     method = str(message.get("method") or "")
     params = message.get("params") if isinstance(message.get("params"), dict) else {}
 
+    if method == "Target.attachedToTarget":
+        target_info = params.get("targetInfo") if isinstance(params.get("targetInfo"), dict) else {}
+        target_type = str(target_info.get("type") or "")
+        worker_session = str(params.get("sessionId") or "")
+        if target_type in {"worker", "service_worker", "shared_worker"} and worker_session:
+            _schedule_worker_fingerprint(self, worker_session)
+        return
     if method == "Page.frameAttached":
         frame_id = str(params.get("frameId") or "")
+        parent_frame_id = str(params.get("parentFrameId") or "")
         if frame_id:
             _epoch_map(self).setdefault(frame_id, 0)
+            if parent_frame_id:
+                with self._lock:
+                    self._frame_parents[frame_id] = parent_frame_id
         return
     if method == "Page.frameNavigated":
         frame = params.get("frame") if isinstance(params.get("frame"), dict) else {}

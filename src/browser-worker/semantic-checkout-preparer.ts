@@ -26,6 +26,24 @@ export interface SemanticCheckoutPreparationResult {
 export class SemanticCheckoutPreparer {
   private readonly fieldResolver = new FieldSemanticResolver(new OllamaEmbeddingProvider());
 
+  /**
+   * Number of visible form controls currently rendered across the page and its
+   * frames. Used as a load gate before autofill starts: the Global-E checkout
+   * can take 1-3 minutes before its fields exist.
+   */
+  async observeCount(page: Page): Promise<number> {
+    const interactions = new GhostCursorUiInteractionHelper(page);
+    const autofill = new SemanticFieldAutofill(page, interactions, this.fieldResolver);
+    return autofill.observeCount();
+  }
+
+  /** True when a real checkout control is enabled (loading spinner gone). */
+  async observeReady(page: Page): Promise<boolean> {
+    const interactions = new GhostCursorUiInteractionHelper(page);
+    const autofill = new SemanticFieldAutofill(page, interactions, this.fieldResolver);
+    return autofill.observeReady();
+  }
+
   async prepare(page: Page, profile: AresProfile): Promise<SemanticCheckoutPreparationResult> {
     const interactions = new GhostCursorUiInteractionHelper(page);
     const plan = await new SemanticCheckoutProfilePlanner(interactions).prepare(page, profile);
@@ -60,19 +78,23 @@ export class SemanticCheckoutPreparer {
       if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 450));
       await autofill.fillSemantic(plan.values).catch(() => undefined);
 
+      const hosts = typeof page.frames === "function" && page.frames().length ? page.frames() : [page];
       for (const fallback of fallbackFields) {
         if (autofill.hasObservedIntent(fallback.target.intent)) continue;
         const value = plan.values.valueFor(fallback.target);
         if (!value?.trim()) continue;
 
-        for (const selector of fallback.selectors) {
-          const locator = page.locator(selector).first();
-          try {
-            const success = fallback.select
-              ? await autofill.selectLocator(fallback.target, locator, value)
-              : await autofill.fillLocator(fallback.target, locator, value);
-            if (success) break;
-          } catch {}
+        for (const host of hosts) {
+          for (const selector of fallback.selectors) {
+            const locator = host.locator(selector).first();
+            try {
+              const success = fallback.select
+                ? await autofill.selectLocator(fallback.target, locator, value)
+                : await autofill.fillLocator(fallback.target, locator, value);
+              if (success) break;
+            } catch {}
+          }
+          if (autofill.hasObservedIntent(fallback.target.intent)) break;
         }
       }
 

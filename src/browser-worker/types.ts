@@ -14,6 +14,7 @@ export interface BrowserLocator {
   isEnabled(options?: { timeout?: number }): Promise<boolean>;
   click(options?: Record<string, unknown>): Promise<void>;
   fill(value: string, options?: Record<string, unknown>): Promise<void>;
+  type(value: string, options?: Record<string, unknown>): Promise<void>;
   inputValue(options?: { timeout?: number }): Promise<string>;
   innerText(options?: { timeout?: number }): Promise<string>;
   allTextContents(): Promise<string[]>;

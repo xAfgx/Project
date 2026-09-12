@@ -51,6 +51,14 @@ export interface QueueWaitOptions {
   externalSignal?: () => QueueExternalSignal | undefined;
   allowPassiveNetwork?: boolean;
   allowPassiveDom?: boolean;
+  /**
+   * While the queue is still active, run `challengeAction` best-effort every
+   * `challengePollIntervalMs`. Waiting rooms can serve a DataDome/reCAPTCHA
+   * challenge during the (10-40 min) wait; without this the session would sit
+   * idle until the release and only then notice the unsolved challenge.
+   */
+  challengePollIntervalMs?: number;
+  challengeAction?: () => unknown;
 }
 
 export interface QueueWaitResult {
@@ -132,6 +140,7 @@ type PassivePage = Page & {
 export class BrowserQueueWaiter {
   private networkSignal?: NetworkQueueSignal;
   private responseListener?: (response: Response) => void;
+  private lastChallengePollAt = 0;
 
   constructor(
     private readonly page: Page,
@@ -163,7 +172,24 @@ export class BrowserQueueWaiter {
     const existing = this.task.config.data?.["queueStatus"] as Record<string, unknown> | undefined;
     const seededActive = existing?.["active"] === true;
     const initial = await this.readSignal();
-    if (!initial.active && !seededActive) return { detected: false, released: false, elapsedMs: 0 };
+    // A queue page that has ALREADY been released (DOM status text reports a
+    // release keyword, or the page was redirected off the queue URL) must be
+    // treated as detected+released, not as "no queue". Otherwise the monitor
+    // re-navigates to the queue URL and the release is never confirmed.
+    const initialReleased = !initial.active && Boolean(initial.statusText && RELEASE_STATUS_RE.test(initial.statusText));
+    if (!initial.active && !seededActive) {
+      if (initialReleased) {
+        const releasedAt = new Date().toISOString();
+        const maxWaitMs = clampNumber(this.options.maxWaitMs ?? ONE_HOUR_MS, 1_000, ONE_HOUR_MS);
+        this.publish({
+          active: false, phase: "released", position: initial.position,
+          timeToWaitSeconds: 0, statusText: initial.statusText || "Warteschlange verlassen",
+          source: initial.source, detectedAt: releasedAt, updatedAt: releasedAt, releasedAt, elapsedMs: 0, maxWaitMs
+        });
+        return { detected: true, released: true, elapsedMs: 0 };
+      }
+      return { detected: false, released: false, elapsedMs: 0 };
+    }
 
     const seededDetectedMs = Date.parse(String(existing?.["detectedAt"] ?? ""));
     const startedAt = seededActive && Number.isFinite(seededDetectedMs) ? seededDetectedMs : Date.now();
@@ -184,6 +210,7 @@ export class BrowserQueueWaiter {
 
     while (Date.now() - startedAt < maxWaitMs) {
       const elapsedMs = Math.max(0, Date.now() - startedAt);
+      this.pollChallenge();
       const signal = await this.readSignal();
       if (signal.active) {
         clearCount = 0;
@@ -314,6 +341,19 @@ export class BrowserQueueWaiter {
       };
     } catch {
       // Passive best-effort telemetry; Stage 3 DOM remains available.
+    }
+  }
+
+  private pollChallenge(): void {
+    const intervalMs = this.options.challengePollIntervalMs ?? 0;
+    if (!(intervalMs > 0) || !this.options.challengeAction) return;
+    const now = Date.now();
+    if (now - this.lastChallengePollAt < intervalMs) return;
+    this.lastChallengePollAt = now;
+    try {
+      void Promise.resolve(this.options.challengeAction()).catch(() => undefined);
+    } catch {
+      // Best-effort: a challenge probe must never break the queue wait.
     }
   }
 

@@ -2,8 +2,8 @@
   <div class="secure-payment-head">
     <div>
       <div class="eyebrow">ZAHLUNGSDATEN</div>
-      <h3>Kartendaten</h3>
-      <small>Verschlüsselt außerhalb von profiles.json gespeichert. Im Checkout werden die Daten nur für die aktive Session entschlüsselt.</small>
+      <h3>Karten</h3>
+      <small>Verschlüsselt außerhalb von profiles.json gespeichert. Eine Karte kann mehreren Profilen zugewiesen werden; im Checkout werden die Daten nur für die aktive Session entschlüsselt.</small>
     </div>
     <span class="security-chip" [class.ready]="encryptionAvailable">{{ encryptionAvailable ? 'OS-ENCRYPTED' : 'ENCRYPTION FEHLT' }}</span>
   </div>
@@ -11,7 +11,32 @@
   <div class="notice error" *ngIf="error">{{ error }}</div>
   <div class="notice info" *ngIf="info">{{ info }}</div>
 
+  <div class="payment-card-manager">
+    <label class="wide">
+      <span>Karte für dieses Profil</span>
+      <select [ngModel]="assignedCardId" (ngModelChange)="assignCard($event)">
+        <option value="">— keine Karte zugewiesen —</option>
+        <option *ngFor="let card of cards" [value]="card.id">{{ card.label }}</option>
+      </select>
+    </label>
+
+    <div class="manager-list" *ngIf="cards.length">
+      <div class="manager-card" *ngFor="let card of cards" [class.assigned]="card.id === assignedCardId">
+        <div>
+          <b>{{ card.label }}</b>
+          <span>{{ card.view.holderName }} · {{ card.view.expiryMonth }}/{{ card.view.expiryYear }} · {{ card.view.maskedCardNumber }}</span>
+        </div>
+        <button class="ghost" type="button" (click)="deleteCard(card.id, $event)">Löschen</button>
+      </div>
+    </div>
+    <div class="empty" *ngIf="!cards.length">Noch keine Karte gespeichert.</div>
+  </div>
+
   <div class="form-grid">
+    <label class="wide">
+      <span>Kartenname (optional)</span>
+      <input [(ngModel)]="cardLabel" placeholder="z. B. Visa Hauptkarte">
+    </label>
     <label class="wide">
       <span>Karteninhaber</span>
       <input [(ngModel)]="holderName" autocomplete="cc-name" placeholder="Max Mustermann">
@@ -45,7 +70,7 @@
 
   <div class="secure-payment-actions">
     <button class="btn btn-primary" type="button" [disabled]="saving || !encryptionAvailable" (click)="save()">
-      {{ saving ? 'Speichere…' : 'Zahlungsdaten sicher speichern' }}
+      {{ saving ? 'Speichere…' : (assignedCardId ? 'Zugewiesene Karte aktualisieren' : 'Neue Karte speichern') }}
     </button>
   </div>
 </section>

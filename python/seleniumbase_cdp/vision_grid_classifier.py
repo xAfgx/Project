@@ -17,6 +17,8 @@ PROMPT_TEMPLATES: Tuple[str, ...] = (
     PIPELINE_PROMPT_TEMPLATE,
     "This image contains {target}.",
     "A photo containing {target}.",
+    "A picture of {target}.",
+    "An image showing {target}.",
 )
 DEFAULT_RAW_LOGIT_THRESHOLD = -3.892
 
@@ -60,6 +62,9 @@ class VisionGridClassifier:
         )
         self.reference_margin = self._reference_margin(
             os.environ.get("ARES_VISION_REFERENCE_MARGIN", "0.75")
+        )
+        self.selection_margin = self._reference_margin(
+            os.environ.get("ARES_VISION_SELECTION_MARGIN", "0.75")
         )
         self.offline = os.environ.get("ARES_VISION_OFFLINE", "0").strip() == "1"
         self.remote_url = (
@@ -321,6 +326,33 @@ class VisionGridClassifier:
                     )
 
                 ensemble_logits = logits_per_image.mean(dim=1)
+
+                # Test-time augmentation: average with horizontally flipped
+                # tiles. Cheap on GPU and noticeably improves borderline tiles.
+                try:
+                    flipped = [image.transpose(self._image.FLIP_LEFT_RIGHT) for _, image in loaded]
+                    flipped_inputs = self._processor(
+                        text=prompts,
+                        images=flipped,
+                        padding="max_length",
+                        max_length=64,
+                        truncation=True,
+                        return_tensors="pt",
+                    )
+                    flipped_inputs = self._to_device(flipped_inputs)
+                    with self._torch.inference_mode():
+                        flipped_outputs = self._model(**flipped_inputs)
+                    flipped_logits = getattr(flipped_outputs, "logits_per_image", None)
+                    if (
+                        flipped_logits is not None
+                        and flipped_logits.ndim == 2
+                        and flipped_logits.shape[1] == len(prompts)
+                    ):
+                        ensemble_logits = (ensemble_logits + flipped_logits.mean(dim=1)) / 2.0
+                except Exception:
+                    # TTA is an accuracy bonus only; never fail the classification.
+                    pass
+
                 probabilities = self._torch.sigmoid(ensemble_logits)
                 logit_values = ensemble_logits.detach().float().cpu().tolist()
                 probability_values = probabilities.detach().float().cpu().tolist()
@@ -476,14 +508,22 @@ class VisionGridClassifier:
                 self._torch = torch
                 self._image = Image
                 self._device = "cuda" if torch.cuda.is_available() else "cpu"
-                self._processor = AutoProcessor.from_pretrained(
-                    self.model_name,
-                    local_files_only=self.offline,
-                )
-                self._model = AutoModel.from_pretrained(
-                    self.model_name,
-                    local_files_only=self.offline,
-                )
+                if self.offline:
+                    self._processor = AutoProcessor.from_pretrained(
+                        self.model_name,
+                        local_files_only=True,
+                    )
+                    self._model = AutoModel.from_pretrained(
+                        self.model_name,
+                        local_files_only=True,
+                    )
+                else:
+                    # Never let a missing local model stall the worker on a
+                    # network download: bound the load so the offline/skip path
+                    # is reached quickly when the model is not cached locally.
+                    loaded = self._load_with_timeout(self._load_remote_models)
+                    if not loaded:
+                        raise RuntimeError("Vision model load timed out")
                 self._model.to(self._device)
                 self._model.eval()
                 self._error = ""
@@ -496,6 +536,38 @@ class VisionGridClassifier:
                 self._error = f"Vision model unavailable: {exc}"
                 self._load_retry_at = time.monotonic() + 5.0
                 return False
+
+    @staticmethod
+    def _load_with_timeout(loader: Any, timeout_ms: int = 10_000) -> bool:
+        result: Dict[str, Any] = {"done": False}
+
+        def run() -> None:
+            try:
+                loader()
+                result["done"] = True
+            except Exception as exc:
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        thread.join(timeout_ms / 1000.0)
+        if not result.get("done") and thread.is_alive():
+            return False
+        if "error" in result:
+            raise RuntimeError(result["error"])
+        return True
+
+    def _load_remote_models(self) -> None:
+        from transformers import AutoModel, AutoProcessor
+
+        self._processor = AutoProcessor.from_pretrained(
+            self.model_name,
+            local_files_only=False,
+        )
+        self._model = AutoModel.from_pretrained(
+            self.model_name,
+            local_files_only=False,
+        )
 
     def _read_image(self, source: str) -> Any:
         if not source:
@@ -542,6 +614,13 @@ class VisionGridClassifier:
                     cleaned = re.sub(r"(?i)\s+aus$", "", cleaned).strip(" .:;-")
                     value = cleaned
                 break
+        # Drop a leading article so the SigLIP prompt is a clean class name
+        # ("einem Hydranten" -> "Hydranten", "the traffic light" -> "traffic light").
+        value = re.sub(
+            r"(?i)^(?:ein(?:e|em|en|er)?|der|die|das|den|dem|des|the|a|an)\s+",
+            "",
+            value,
+        ).strip()
         # Cut off trailing submit instructions ("...auf Bestätigen", "Verify", ...).
         value = re.split(
             r"(?i)\s+(?:klicken|klicke|anklicken|drücken|druecken|überspringen|ueberspringen|skip|überspringe|verify|submit)\b",
@@ -571,9 +650,22 @@ class VisionGridClassifier:
         if not ranked:
             return []
 
-        n = len(ranked)
-        k = max(3, int(round(n ** 0.5)))
-        return [index for index, _ in ranked[:k]]
+        values = [score for _, score in ranked]
+        n = len(values)
+        mean = sum(values) / n
+        variance = sum((value - mean) ** 2 for value in values) / n
+        std = variance ** 0.5
+        # Adaptive count instead of a fixed top-k: a fixed k of sqrt(n) cannot
+        # match grids whose true positive count is 2 or 4. Tiles clearly above
+        # the grid average win, with a floor of 3 (reCAPTCHA almost never
+        # accepts fewer) and at least one tile left unselected.
+        threshold = max(float(fallback_threshold), mean + self.selection_margin * std)
+        selected = [index for index, score in ranked if score >= threshold]
+        if len(selected) < 3:
+            selected = [index for index, _ in ranked[:3]]
+        if len(selected) >= n:
+            selected = [index for index, _ in ranked[: max(3, n - 1)]]
+        return selected
 
     def _select_reference_matches(self, scores: List[float | None]) -> List[int]:
         """Dynamic relative margin on the reference-category logit scores.

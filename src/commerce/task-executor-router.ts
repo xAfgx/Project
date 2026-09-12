@@ -73,7 +73,10 @@ export class CommerceTaskExecutorRouter implements ITaskExecutor {
       return false;
     }
     this.taskOwners.set(task.id, executor);
-    try { return await executor.execute(task); } finally { this.taskOwners.delete(task.id); }
+    try {
+      const result = await executor.execute(task);
+      return typeof result === "boolean" ? result : result.success;
+    } finally { this.taskOwners.delete(task.id); }
   }
 
   async updateDiscoveryKeywords(taskId: string, keywords: string[]): Promise<string[]> {

@@ -47,6 +47,24 @@ FRAME_SELECTORS = (
 _MIN_FRAME_WIDTH = 100.0
 _MIN_FRAME_HEIGHT = 50.0
 
+FAST_CHALLENGE_SELECTORS = (
+    "#recaptcha-verify-button",
+    ".rc-button-default",
+    ".rc-imageselect",
+    ".cf-turnstile",
+    'iframe[src*="recaptcha" i]',
+    'iframe[title*="recaptcha" i]',
+    'iframe[src*="hcaptcha" i]',
+    'iframe[src*="turnstile" i]',
+    ".captcha-grid",
+    "#submit-captcha",
+    ".captcha-tile",
+    # DataDome (slider / puzzle challenges).
+    "[data-dd-captcha-container]",
+    "#captcha__frame",
+    ".captcha__human",
+)
+
 PREFERRED_SUBMIT_SELECTORS = (
     "#recaptcha-verify-button",
     ".rc-button-default",
@@ -404,6 +422,42 @@ class ChallengeWatchdog:
             "polls": self._polls,
             "checkedAt": self._last_checked_at,
         }
+
+
+def challenge_present_fast(seleniumbase_cdp: Any) -> bool:
+    """Cheap challenge probe via the DOM domain only (no JavaScript).
+
+    Uses a shallow ``DOM.getDocument(depth=0, pierce=False)`` plus
+    ``DOM.querySelector`` for the known challenge selectors, so the full
+    document tree is never transferred and no ``Runtime.evaluate`` is issued.
+    """
+    get_tab = getattr(seleniumbase_cdp, "get_active_tab", None)
+    get_loop = getattr(seleniumbase_cdp, "get_event_loop", None)
+    if not callable(get_tab) or not callable(get_loop):
+        return False
+    try:
+        tab = get_tab()
+        loop = get_loop()
+    except Exception:
+        return False
+    if tab is None or loop is None:
+        return False
+
+    async def check() -> bool:
+        doc = await tab.send(mycdp.dom.get_document(0, False))
+        for selector in FAST_CHALLENGE_SELECTORS:
+            try:
+                node_id = await tab.send(mycdp.dom.query_selector(doc.node_id, selector))
+            except Exception:
+                continue
+            if node_id:
+                return True
+        return False
+
+    try:
+        return bool(loop.run_until_complete(check()))
+    except Exception:
+        return False
 
 
 def _inside(point: Tuple[float, float], window: Optional[Dict[str, float]]) -> bool:

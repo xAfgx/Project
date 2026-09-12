@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import random
+import time
 from typing import Any, Dict, Iterable, List
 
 
@@ -56,7 +59,7 @@ class AuthorizedGridActionExecutor:
           const selected = {json.dumps(selected)};
           const overrides = {json.dumps(overrides)};
           const supported = new Set({json.dumps(_SUPPORTED_COUNTS)});
-          const roots = [], seen = new Set();
+          const seen = new Set();
           const visible = el => {{
             if (!el?.getBoundingClientRect) return false;
             const r = el.getBoundingClientRect(), s = getComputedStyle(el);
@@ -75,21 +78,13 @@ class AuthorizedGridActionExecutor:
               .filter(el => visible(el) && bgUrl(el));
             return [...new Set([...items, ...bgCandidates])];
           }};
-          const walk = root => {{
-            if (!root || seen.has(root)) return;
-            seen.add(root); roots.push(root);
-            for (const el of root.querySelectorAll?.('*') || []) if (el.shadowRoot) walk(el.shadowRoot);
-            for (const frame of root.querySelectorAll?.('iframe') || []) {{
-              try {{ if (frame.contentDocument) walk(frame.contentDocument); }} catch (_) {{}}
-            }}
-          }};
-          walk(document);
-
           const groups = [];
-          for (const root of roots) {{
+          const walk = (root, ox, oy) => {{
+            if (!root || seen.has(root)) return;
+            seen.add(root);
             if (overrides.tiles) {{
               const tiles = [...root.querySelectorAll(overrides.tiles)].filter(visible);
-              if (supported.has(tiles.length)) groups.push({{root:overrides.root ? root.querySelector(overrides.root) || root : root, tiles, preferred:true}});
+              if (supported.has(tiles.length)) groups.push({{root:overrides.root ? root.querySelector(overrides.root) || root : root, tiles, offsetX:ox, offsetY:oy, preferred:true}});
             }}
             if (!overrides.tiles) {{
               const parents = new Set();
@@ -100,24 +95,34 @@ class AuthorizedGridActionExecutor:
               for (const parent of parents) {{
                 const tiles = [...new Set(visualsIn(parent).map(tileFor))].filter(visible);
                 if (!supported.has(tiles.length)) continue;
-                groups.push({{root:parent, tiles, preferred:false}});
+                groups.push({{root:parent, tiles, offsetX:ox, offsetY:oy, preferred:false}});
               }}
             }}
-          }}
+            for (const el of root.querySelectorAll?.('*') || []) if (el.shadowRoot) walk(el.shadowRoot, ox, oy);
+            for (const frame of root.querySelectorAll?.('iframe') || []) {{
+              try {{
+                if (frame.contentDocument) {{
+                  const r = frame.getBoundingClientRect();
+                  walk(frame.contentDocument, ox + r.left, oy + r.top);
+                }}
+              }} catch (_) {{}}
+            }}
+          }};
+          walk(document, 0, 0);
           groups.sort((a,b) => Number(b.preferred)-Number(a.preferred));
           const group = groups[0];
-          if (!group) return {{clicked:[], submitted:false}};
+          if (!group) return {{tilePoints:[], submitPoint:null}};
 
-          const clicked = [];
+          const tilePoints = [];
           for (const index of selected) {{
             const tile = group.tiles[index];
             if (!tile) continue;
             tile.scrollIntoView({{block:'center', inline:'center'}});
-            tile.click();
-            clicked.push(index);
+            const r = tile.getBoundingClientRect();
+            tilePoints.push({{index, x: group.offsetX + r.left + r.width/2, y: group.offsetY + r.top + r.height/2}});
           }}
 
-          let submitted = false;
+          let submitPoint = null;
           if ({str(submit).lower()}) {{
             const gridRect = group.tiles.reduce((acc, tile) => {{
               const r = tile.getBoundingClientRect();
@@ -143,13 +148,66 @@ class AuthorizedGridActionExecutor:
               const selector = 'button[type="submit"],input[type="submit"],button,[role="button"]';
               button = [...(group.root.querySelectorAll(selector) || [])].filter(inPuzzleWindow)[0] || null;
             }}
-            if (button) {{ button.click(); submitted = true; }}
+            if (button) {{
+              const r = button.getBoundingClientRect();
+              submitPoint = {{x: group.offsetX + r.left + r.width/2, y: group.offsetY + r.top + r.height/2}};
+            }}
           }}
-          return {{clicked, submitted}};
+          return {{tilePoints, submitPoint}};
         }})()
         """
         value = self._evaluate(script)
-        return value if isinstance(value, dict) else {"clicked": [], "submitted": False}
+        if not isinstance(value, dict):
+            return {"clicked": [], "submitted": False}
+        clicked: List[int] = []
+        for point in value.get("tilePoints") or []:
+            if not isinstance(point, dict):
+                continue
+            try:
+                index = int(point.get("index"))
+                x = float(point.get("x"))
+                y = float(point.get("y"))
+            except (TypeError, ValueError):
+                continue
+            if self._cdp_click(x, y):
+                clicked.append(index)
+        submitted = False
+        submit_point = value.get("submitPoint")
+        if isinstance(submit_point, dict):
+            try:
+                submitted = self._cdp_click(float(submit_point.get("x")), float(submit_point.get("y")))
+            except (TypeError, ValueError):
+                submitted = False
+        return {"clicked": clicked, "submitted": submitted}
+
+    def _cdp_click(self, x: float, y: float) -> bool:
+        """Native CDP press/release at top-level viewport coordinates.
+
+        Replaces the old JavaScript el.click() fallback: a scripted click is
+        untrusted (detail 0, origin coordinates, no press behind it) and is
+        exactly what bot detection flags. This path goes through the real input
+        pipeline, so the press/release pair is complete and trusted.
+        """
+        try:
+            from mycdp import input_ as cdp_input
+        except Exception:
+            return False
+        tab = getattr(self._sb, "get_active_tab", None)
+        loop = getattr(self._sb, "get_event_loop", None)
+        if not callable(tab) or not callable(loop):
+            return False
+        try:
+            active = tab()
+            event_loop = loop()
+            button = cdp_input.MouseButton("left")
+            px, py = float(x), float(y)
+            event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mouseMoved", x=px, y=py, button=button, buttons=0, pointer_type="mouse")))
+            event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mousePressed", x=px, y=py, button=button, buttons=1, click_count=1, pointer_type="mouse")))
+            time.sleep(random.uniform(0.045, 0.115))
+            event_loop.run_until_complete(active.send(cdp_input.dispatch_mouse_event("mouseReleased", x=px, y=py, button=button, buttons=0, click_count=1, pointer_type="mouse")))
+            return True
+        except Exception:
+            return False
 
     def _apply_frame(self, state: Dict[str, Any], selected: List[int], submit: bool) -> Dict[str, Any]:
         try:
@@ -163,9 +221,10 @@ class AuthorizedGridActionExecutor:
         for index in selected:
             if index >= len(images):
                 continue
-            click = getattr(images[index], "mouse_click", None) or getattr(images[index], "click", None)
+            click = getattr(images[index], "mouse_click", None)
             if callable(click):
                 click()
+                self._flush_pending_input()
                 clicked.append(index)
 
         submitted = False
@@ -178,12 +237,30 @@ class AuthorizedGridActionExecutor:
                     button = frame.query_selector(selector)
                 except Exception:
                     button = None
-                click = (getattr(button, "mouse_click", None) or getattr(button, "click", None)) if button else None
+                click = getattr(button, "mouse_click", None) if button else None
                 if callable(click):
                     click()
+                    self._flush_pending_input()
                     submitted = True
                     break
         return {"clicked": clicked, "submitted": submitted}
+
+    def _flush_pending_input(self) -> None:
+        """Run SeleniumBase's fire-and-forget mouseReleased task immediately.
+
+        `element.mouse_click()` schedules the native mouseReleased as an
+        un-awaited asyncio task, and `run_until_complete` returns before that
+        task executes. The click then lands seconds later (or after the next
+        press) and is counted as a click with no button press behind it. Pumping
+        the loop once keeps the press/release pair inside the same interaction.
+        """
+        loop = getattr(self._sb, "get_event_loop", None)
+        if not callable(loop):
+            return
+        try:
+            loop().run_until_complete(asyncio.sleep(0.05))
+        except Exception:
+            pass
 
     def _evaluate(self, script: str) -> Any:
         evaluate = getattr(self._sb, "evaluate", None)

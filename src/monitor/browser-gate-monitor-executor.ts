@@ -80,7 +80,7 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
     return () => this.runtimeListeners.delete(callback);
   }
 
-  async execute(task: Task): Promise<boolean> {
+  async execute(task: Task): Promise<boolean | { success: boolean; handle?: import("../browser-worker/types").BrowserContextHandle }> {
     const strategy = getMonitorStrategy(task);
     const shopId = task.config.shopId;
     const profileId = String(task.config.data?.["profileId"] ?? "").trim();
@@ -238,6 +238,11 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
         maxWaitMs: 60 * 60_000,
         allowPassiveNetwork: policy.allowPassiveNetwork,
         allowPassiveDom: policy.allowPassiveDom,
+        challengePollIntervalMs: 7_000,
+        challengeAction: () => {
+          const solver = (page as unknown as { solveCaptcha?: () => Promise<boolean> }).solveCaptcha;
+          return typeof solver === "function" ? solver.call(page) : undefined;
+        },
         externalSignal: networkMode === "session-http-preferred" ? () => {
           publishSessionTelemetry();
           const signal = sessionPoller?.getLatest();
@@ -315,7 +320,22 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
               }
             };
             this.emit(task);
-            return true;
+            return { success: true, handle };
+          }
+          if (!queue.detected) {
+            const probePage = page as unknown as { passiveQueueSnapshot?: () => Promise<unknown> };
+            const snapshot = typeof probePage.passiveQueueSnapshot === "function"
+              ? await probePage.passiveQueueSnapshot().catch(() => undefined)
+              : undefined;
+            task.config.data = {
+              ...(task.config.data ?? {}),
+              queueProbe: {
+                pageUrl: page.url(),
+                snapshot: snapshot ?? null,
+                at: new Date().toISOString()
+              }
+            };
+            this.emit(task);
           }
           await this.delay(this.refreshIntervalMs, controller.signal);
           if (controller.signal.aborted) continue;
@@ -360,7 +380,15 @@ export class BrowserGateMonitorExecutor implements ITaskExecutor {
     } finally {
       sessionPoller?.stop();
       this.active.delete(task.id);
-      await this.browserWorker.closeContext(task.id).catch(() => undefined);
+      const queueStatus = task.config.data?.["queueStatus"] as Record<string, unknown> | undefined;
+      const handoff = task.config.data?.["browserGateHandoff"] as Record<string, unknown> | undefined;
+      // Keep the browser alive whenever a release was confirmed and a handle was
+      // handed to the child lane. Closing here would invalidate the reused
+      // context. Any non-handoff exit still closes eagerly.
+      const released = queueStatus?.["phase"] === "released" || handoff?.["released"] === true;
+      if (!released) {
+        await this.browserWorker.closeContext(task.id).catch(() => undefined);
+      }
     }
   }
 

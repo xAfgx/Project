@@ -65,7 +65,8 @@ export class EphemeralPaymentExecutor implements ITaskExecutor {
 
     this.taskRefs.set(task.id, task);
     try {
-      const success = await this.delegate.execute(workerTask);
+      const result = await this.delegate.execute(workerTask);
+      const success = typeof result === "boolean" ? result : result.success;
       task.config = sanitizedConfig(workerTask.config);
       task.lastError = workerTask.lastError;
       return success;

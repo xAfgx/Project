@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import time
@@ -396,6 +397,23 @@ class ConsentPopupHandler:
         except Exception:
             return False
 
+    def _flush_pending_input(self) -> None:
+        """Run SeleniumBase's fire-and-forget mouseReleased task immediately.
+
+        `element.mouse_click()` schedules the native mouseReleased as an
+        un-awaited asyncio task, and `run_until_complete` returns before that
+        task executes. The click then lands seconds later (or after the next
+        press) and is counted as a click with no button press behind it. Pumping
+        the loop once keeps the press/release pair inside the same interaction.
+        """
+        loop = getattr(self._sb, "get_event_loop", None)
+        if not callable(loop):
+            return
+        try:
+            loop().run_until_complete(asyncio.sleep(0.05))
+        except Exception:
+            pass
+
     def _click_shadow_js(self) -> Dict[str, Any]:
         script = self._shadow_click_script()
         value = self._fresh_evaluate(script)
@@ -516,6 +534,7 @@ class ConsentPopupHandler:
                         continue
                     try:
                         click()
+                        self._flush_pending_input()
                         return {
                             'advanced': True,
                             'text': text,
@@ -602,6 +621,7 @@ class ConsentPopupHandler:
                     continue
                 try:
                     click()
+                    self._flush_pending_input()
                     return {
                         'dismissed': True,
                         'text': text,

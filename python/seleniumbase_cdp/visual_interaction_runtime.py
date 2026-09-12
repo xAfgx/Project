@@ -44,6 +44,11 @@ class VisualInteractionRuntime:
         self._slider_grounder = CompositeSliderGrounder(self._sb, profile_dir=self._profile_dir)
         self._trace = InteractionTrace(self._profile_dir)
         self._popup_handler = ConsentPopupHandler(self._sb)
+        try:
+            from captcha_api_solver import CaptchaApiSolver
+            self._captcha_api_solver = CaptchaApiSolver(self._sb, trace=self._trace)
+        except Exception:
+            self._captcha_api_solver = None
         self._controller = AutoInteractionController(
             self._grid,
             self._slider,
@@ -52,13 +57,28 @@ class VisualInteractionRuntime:
             self._vision,
             self._slider_grounder,
             self._trace,
+            self._captcha_api_solver,
         )
         self._last_grid_debug_signature = ""
+        self._consent_settled_for_document = False
+
+    def reset_after_navigation(self) -> None:
+        """Re-arm consent handling exactly once for the freshly loaded document.
+
+        Consent/cookie banners belong to the page load. After the first
+        dismissal attempt on a document the handler stays quiet, so it can no
+        longer scroll or click on product/cart pages.
+        """
+        self._consent_settled_for_document = False
 
     def poll_and_act(self) -> Dict[str, Any]:
         self._trace.append("runtime-stage-enter", {"stage": "popup-dismiss"})
         started = time.monotonic()
-        popup = self._bounded_popup_dismiss(3.0)
+        if not self._consent_settled_for_document:
+            self._consent_settled_for_document = True
+            popup = self._bounded_popup_dismiss(1.5)
+        else:
+            popup = {"dismissed": False, "reason": "consent-settled-for-document"}
         self._trace.append("runtime-stage", {
             "stage": "popup-dismiss",
             "elapsedMs": round((time.monotonic() - started) * 1000.0, 3),
@@ -87,17 +107,23 @@ class VisualInteractionRuntime:
             self._trace.append("checkout-action", checkout)
             return {"acted": True, "kind": "checkout", "result": checkout}
 
+        # Both adapters are polled once and their states are handed to the
+        # controller, so the DOM is not scanned twice in the same cycle. The
+        # grid poll must never be skipped: a slider false-positive would
+        # otherwise shadow a real challenge grid (e.g. reCAPTCHA).
         self._trace.append("runtime-stage-enter", {
             "stage": "grid-prefetch",
             "afterPopupDismiss": popup_dismissed,
         })
         started = time.monotonic()
         grid_state = self._grid.poll()
+        slider_probe = self._slider.poll()
         self._trace.append("runtime-stage", {
             "stage": "grid-prefetch",
             "elapsedMs": round((time.monotonic() - started) * 1000.0, 3),
             "kind": str(grid_state.get("kind") or "none"),
             "scope": str(grid_state.get("scope") or ""),
+            "sliderKind": str(slider_probe.get("kind") or "none"),
         })
         if grid_state.get("kind") == "image-grid":
             signature = str(grid_state.get("signature") or "")
@@ -151,7 +177,9 @@ class VisualInteractionRuntime:
             "afterPopupDismiss": popup_dismissed,
         })
         started = time.monotonic()
-        primary = self._finalize_interaction(self._controller.poll_and_act())
+        primary = self._finalize_interaction(
+            self._controller.poll_and_act(grid_state=grid_state, slider_state=slider_probe)
+        )
         self._trace.append("runtime-stage", {
             "stage": "controller",
             "elapsedMs": round((time.monotonic() - started) * 1000.0, 3),
@@ -314,12 +342,13 @@ class VisualInteractionRuntime:
         deadline = time.monotonic() + 1.6
         dismissed = []
         while time.monotonic() < deadline:
-            popup = self._popup_handler.dismiss_once()
-            if popup.get("dismissed"):
-                dismissed.append(popup)
-                self._trace.append("post-success-popup", popup)
-                time.sleep(0.08)
-                continue
+            if not self._consent_settled_for_document:
+                popup = self._popup_handler.dismiss_once()
+                if popup.get("dismissed"):
+                    dismissed.append(popup)
+                    self._trace.append("post-success-popup", popup)
+                    time.sleep(0.08)
+                    continue
 
             progress = self._popup_handler.advance_progress_once()
             if progress.get("advanced"):

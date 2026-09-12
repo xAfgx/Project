@@ -33,6 +33,12 @@ export interface PointerInteractionProfile {
    accelerationProfile: "natural" | "linear" | "ease"; // Biological acceleration
    stoppingOscillation: boolean;    // Mouse oscillation when stopping
    pauseVarianceMs: number;        // Variance in step timing (biological)
+   // Deliberate hesitation around a click so navigation-triggering clicks are
+   // not instantaneous. Human reaction/settle time before and after pressing.
+   preClickPauseMinMs: number;
+   preClickPauseMaxMs: number;
+   postClickPauseMinMs: number;
+   postClickPauseMaxMs: number;
 }
 
 export interface FormInteractionProfile {
@@ -118,6 +124,18 @@ export interface ClickInteractionOptions extends BaseInteractionOptions {
 }
 
 export interface FillInteractionOptions extends BaseInteractionOptions {}
+export interface TypeInteractionOptions extends BaseInteractionOptions {
+   /** Lower bound for the delay between keystrokes in milliseconds. */
+   interKeyDelayMinMs?: number;
+   /** Upper bound for the delay between keystrokes in milliseconds. */
+   interKeyDelayMaxMs?: number;
+   /** Clear the field before typing. Defaults to false. */
+   clear?: boolean;
+   /** Dispatch a native click on the field before typing. */
+   click?: boolean;
+   /** Probability (0..1) of introducing one typo and correcting it. */
+   typoProbability?: number;
+}
 export interface SelectInteractionOptions extends BaseInteractionOptions {}
 export interface FocusInteractionOptions extends BaseInteractionOptions {}
 export interface HoverInteractionOptions extends BaseInteractionOptions {}
@@ -150,7 +168,11 @@ export const DEFAULT_INTERACTION_PROFILES: InteractionProfiles = {
       overshootCorrection: true,
       accelerationProfile: "natural",
       stoppingOscillation: true,
-      pauseVarianceMs: 4
+      pauseVarianceMs: 4,
+      preClickPauseMinMs: 180,
+      preClickPauseMaxMs: 520,
+      postClickPauseMinMs: 220,
+      postClickPauseMaxMs: 640
    },
    form: {
       readinessTimeoutMs: 4_000,

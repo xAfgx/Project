@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import random
 import re
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Deque, Dict, Iterable, List
 
 import mycdp
+import psutil
 from cursor_path_provider import CursorPathProvider
 from seleniumbase_adapter import SeleniumBaseCdpAdapter
 
@@ -33,6 +35,12 @@ _QUEUE_URL_RE = re.compile(
 _TEXT_MIME_RE = re.compile(r"(?i)^(?:application/(?:json|[^;]+\+json)|text/(?:html|plain))(?:;|$)")
 _FRAME_DESCRIPTORS_SCRIPT = r"""
 const selectorFor = (element) => {
+  // Prefer stable id/name selectors: long :nth-child chains break whenever a
+  // payment accordion or similar widget re-orders its DOM.
+  const id = element.getAttribute('id');
+  if (id) return `#${id.replace(/([^a-zA-Z0-9_-])/g, '\\$1')}`;
+  const name = element.getAttribute('name');
+  if (name) return `${element.tagName.toLowerCase()}[name="${String(name).replace(/"/g, '\\"')}"]`;
   const parts = [];
   let node = element;
   while (node && node.nodeType === 1) {
@@ -58,7 +66,17 @@ return Array.from(document.querySelectorAll('iframe,frame')).map((element, ordin
 
 
 def emit(payload: Dict[str, Any]) -> None:
-    print(f"{PREFIX}{json.dumps(payload, ensure_ascii=False)}", flush=True)
+    # Always write UTF-8 bytes: Windows consoles default to a legacy code page
+    # that cannot encode characters found in real checkout DOM (e.g. U+200E in
+    # phone-prefix option labels), which used to abort whole frame evaluations.
+    line = f"{PREFIX}{json.dumps(payload, ensure_ascii=False)}\n"
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        buffer.write(line.encode("utf-8"))
+        buffer.flush()
+    else:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def read_first() -> Dict[str, Any]:
@@ -126,7 +144,15 @@ if (action === 'is-enabled') return !el.disabled && el.getAttribute('aria-disabl
 if (action === 'input-value') return String(el.value ?? '');
 if (action === 'inner-text') return String(el.innerText ?? el.textContent ?? '');
 if (action === 'bounding-box') { const r = el.getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; }
-if (action === 'scroll-into-view') { el.scrollIntoView({block:'center',inline:'nearest'}); return true; }
+if (action === 'scroll-into-view') {
+  const r = el.getBoundingClientRect();
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  const margin = 24;
+  const outside = r.top < margin || r.left < margin || r.bottom > vh - margin || r.right > vw - margin;
+  if (outside) el.scrollIntoView({block:'center',inline:'nearest'});
+  return true;
+}
 if (action === 'focus') { el.focus({preventScroll:true}); return document.activeElement === el; }
 if (action === 'click') {
   el.scrollIntoView({block:'center',inline:'nearest'});
@@ -255,8 +281,44 @@ class TaskRpcRuntime:
         derived from the user agent OS, so UA, WebGL vendor/renderer, screen
         resolution and fonts never contradict each other.
         """
-        script = self._stealth_spoof_script(int(seed) if seed is not None else 1, user_agent)
-        return self.add_init_script(script)
+        self._ares_spoof_seed = int(seed) if seed is not None else 1
+        self._ares_spoof_ua = user_agent
+        script = self._stealth_spoof_script(self._ares_spoof_seed, user_agent)
+        self._ares_fingerprint_script = script
+        result = self.add_init_script(script)
+        self._enable_worker_fingerprint()
+        return result
+
+    def _enable_worker_fingerprint(self) -> None:
+        """Publish the fingerprint script for the OOPIF registry's auto-attach.
+
+        The registry owns ``Target.setAutoAttach`` (workers and iframes paused
+        until prepared), so worker injection and iframe discovery share one
+        registration on the root session. Calling ``Target.setAutoAttach`` again
+        here would replace that registration and silently break iframe
+        discovery (the checkout's Global-E iframe loses its execution context).
+        This method only publishes the script that the
+        ``Target.attachedToTarget`` handler injects into every attached worker.
+        """
+        registry = getattr(self, "_oopif_registry", None)
+        if registry is None:
+            self._worker_fp_log("no-registry")
+            return
+        try:
+            registry._ares_fingerprint_script = getattr(self, "_ares_fingerprint_script", "")
+            self._worker_fp_log("worker-script-published")
+        except Exception as exc:
+            self._worker_fp_log(f"worker-script-publish-failed {type(exc).__name__}:{str(exc)[:200]}")
+
+    def _worker_fp_log(self, message: str) -> None:
+        try:
+            import tempfile
+            import os as _os
+            path = _os.path.join(tempfile.gettempdir(), "ares-worker-fp.log")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(f"{time.time():.3f} {message}\n")
+        except Exception:
+            pass
 
     @staticmethod
     def _stealth_spoof_script(seed: int, user_agent: str | None = None) -> str:
@@ -373,6 +435,7 @@ class TaskRpcRuntime:
         return list(entries.values())
 
     def rpc(self, command: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure_session_alive()
         self._sync_newest_target()
         action = str(command.get("action") or "")
         if action == "title":
@@ -392,7 +455,20 @@ class TaskRpcRuntime:
                 bring()
             return {"result": True}
         if action == "force-captcha-poll":
+            try:
+                from captcha_api_provider import apply_runtime_config
+                apply_runtime_config(command.get("captcha"))
+            except Exception:
+                pass
             return {"result": self.adapter.force_captcha_poll(), "url": str(self.sb.get_current_url() or "")}
+        if action == "debug-auto-state":
+            return {"result": self.adapter.auto_interaction_state(), "url": str(self.sb.get_current_url() or "")}
+        if action == "reinstall-stealth-spoof":
+            seed = getattr(self, "_ares_spoof_seed", None)
+            if seed is None:
+                return {"result": False, "url": str(self.sb.get_current_url() or "")}
+            result = self.install_stealth_spoof(seed, getattr(self, "_ares_spoof_ua", None))
+            return {"result": result, "url": str(self.sb.get_current_url() or "")}
         if action in {"mouse-move", "mouse-click"}:
             return {"result": self._mouse(action, command)}
 
@@ -623,6 +699,7 @@ return {x, y};
         y = offset_y + float(stable.get("y") or 0.0)
         self._dispatch_native_click(x, y)
         self._sync_newest_target()
+        self._recover_after_click()
         return {
             "clicked": True,
             "native": True,
@@ -630,6 +707,72 @@ return {x, y};
             "x": x,
             "y": y,
         }
+
+    def _native_focus_locator(
+        self,
+        locator: Dict[str, Any],
+        selector: str,
+        nth: int,
+        text_spec: Dict[str, str] | None,
+    ) -> None:
+        """Focus a field natively before typing.
+
+        The default runtime has no DOM-domain shortcut available, so it falls
+        back to the existing native click. The OOPIF runtime overrides this with
+        DOM.focus so tall/nested frames do not depend on viewport coordinates.
+        """
+        self._native_locator_click(locator, selector, nth, text_spec)
+
+    def _ensure_session_alive(self) -> None:
+        """Bounded pre-action liveness guard for every RPC.
+
+        Without this, the first action after a detached document hangs inside
+        its own locate/evaluate step and never reaches the post-click recovery
+        point. Only the affected tab is reset/rebound; no new thread, no new
+        websocket beyond the tab's own re-open.
+        """
+        try:
+            from cdp_session_recovery import ensure_live_cdp_session
+
+            state = ensure_live_cdp_session(self.sb, settle_seconds=0.05, attempts=2)
+            self._log_session_recovery(state)
+        except Exception:
+            pass
+
+    def _log_session_recovery(self, state: Dict[str, Any]) -> None:
+        if state.get("cleanup") not in (None, "none") or state.get("recovered"):
+            print(
+                "[session-recovery]"
+                f" oldTargetId={state.get('oldTargetId') or '-'}"
+                f" probe={state.get('probe')}"
+                f" cleanup={state.get('cleanup')}"
+                f" rebind={state.get('reconnectMethod')}"
+                f" newTargetId={state.get('newTargetId') or state.get('targetId') or '-'}"
+                f" recoveryMs={state.get('recoveryMs')}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    def _recover_after_click(self) -> None:
+        """Post-click CDP liveness guard for click-committed navigations.
+
+        A click may schedule a same-tab navigation that commits a few
+        milliseconds after mouseUp. A successful probe immediately after the
+        click is therefore not proof of a surviving document. Probe once, wait
+        out the late-commit window, then run the existing bounded recovery
+        path. The click itself is never repeated and only the affected tab is
+        reset/rebound.
+        """
+        try:
+            from cdp_session_recovery import ensure_live_cdp_session
+
+            state = ensure_live_cdp_session(self.sb, settle_seconds=0.05, attempts=1)
+            if state.get("cdpConnected"):
+                time.sleep(0.3)
+            state = ensure_live_cdp_session(self.sb, settle_seconds=0.05, attempts=3)
+            self._log_session_recovery(state)
+        except Exception:
+            pass
 
     def _locator_op(self, action: str, locator: Dict[str, Any], command: Dict[str, Any]) -> Any:
         selector = str(locator.get("selector") or "")
@@ -658,6 +801,8 @@ return {x, y};
             )
         if action == "click":
             return self._native_locator_click(locator, selector, nth, text_spec)
+        if action == "type":
+            return self._locator_type(locator, selector, nth, text_spec, command)
         result = self._execute_script_retry(
             locator_script(),
             selector,
@@ -700,6 +845,182 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         if isinstance(value, dict) and value.get("__aresMissing"):
             raise LookupError(f"No element matched locator: {selector}")
         return value
+
+    def _locator_type(
+        self,
+        locator: Dict[str, Any],
+        selector: str,
+        nth: int,
+        text_spec: Dict[str, str] | None,
+        command: Dict[str, Any],
+    ) -> Any:
+        """Type text one character at a time with real CDP key events.
+
+        Unlike the JS ``fill`` path (which sets ``value`` and dispatches a
+        synthetic ``input`` event), this drives the browser's native input
+        pipeline via ``Input.dispatchKeyEvent`` exactly like Playwright and
+        Puppeteer. The resulting DOM events are trusted, so per-keystroke
+        formatters/masks and anti-bot heuristics observe normal typing.
+        """
+        value = str(command.get("value") if command.get("value") is not None else "")
+        options = command.get("options") if isinstance(command.get("options"), dict) else {}
+        # Clearing is opt-in: a stray Control+A on an unfocused field selects the
+        # whole document. Fields start empty in the normal flow.
+        clear = options.get("clear") is True
+        min_delay = max(0.0, float(options.get("interKeyDelayMinMs") or 45))
+        max_delay = max(min_delay, float(options.get("interKeyDelayMaxMs") or 110))
+        typo_probability = max(0.0, min(1.0, float(options.get("typoProbability") or 0.0)))
+        typo_count = max(0, int(options.get("typoCount") or 0))
+        group_size = max(0, int(options.get("groupSize") or 0))
+        group_size_min = max(1, int(options.get("groupSizeMin") or max(1, group_size - 1)))
+        group_min = max(0.0, float(options.get("groupPauseMinMs") or 250))
+        group_max = max(group_min, float(options.get("groupPauseMaxMs") or 700))
+
+        # Focus through the native focus path. No JS value manipulation and no
+        # injected scripts: the page only ever sees trusted input events.
+        self._native_focus_locator(locator, selector, nth, text_spec)
+
+        if clear:
+            self._press_native_key("a", code="KeyA", vk=65, modifiers=2, commands=["selectAll"])
+            self._press_native_key("Backspace", code="Backspace", vk=8)
+
+        typo_indices: set[int] = set()
+        if value:
+            if typo_count > 0:
+                typo_indices = set(random.sample(range(len(value)), min(typo_count, len(value))))
+            elif random.random() < typo_probability:
+                typo_indices = {random.randint(0, len(value) - 1)}
+
+        remaining_in_group = random.randint(group_size_min, group_size) if group_size > 0 else 0
+        for index, char in enumerate(value):
+            if index in typo_indices:
+                wrong = random.choice("abcdefghijklmnopqrstuvwxyz0123456789")
+                self._dispatch_key_char(wrong)
+                time.sleep(random.uniform(0.09, 0.2))
+                self._press_native_key("Backspace", code="Backspace", vk=8)
+                time.sleep(random.uniform(0.07, 0.16))
+            self._dispatch_key_char(char)
+            if index < len(value) - 1:
+                remaining_in_group -= 1
+                if group_size > 0 and remaining_in_group <= 0:
+                    # Longer random pause between digit blocks, like a person
+                    # reading the card in groups of 3-4.
+                    time.sleep(random.uniform(group_min, group_max) / 1000.0)
+                    remaining_in_group = random.randint(group_size_min, group_size)
+                else:
+                    time.sleep(random.uniform(min_delay, max_delay) / 1000.0)
+
+        # Payment fields opt out of the JS readback: the value never needs to be
+        # read back through the page context.
+        if options.get("verify") is False:
+            return {"value": "", "verified": True}
+        result = self._execute_script_retry(locator_script(), selector, nth, text_spec, "input-value", {})
+        actual_value = str(result) if isinstance(result, str) else ""
+        return {"value": actual_value, "verified": actual_value == value}
+
+    def _press_native_key(
+        self,
+        key: str,
+        *,
+        code: str = "",
+        vk: int = 0,
+        modifiers: int = 0,
+        commands: List[str] | None = None,
+    ) -> None:
+        input_domain = getattr(mycdp, "input_", None)
+        dispatch = getattr(input_domain, "dispatch_key_event", None)
+        if not callable(dispatch):
+            raise RuntimeError("CDP Input.dispatchKeyEvent is unavailable")
+        tab = self.sb.get_active_tab()
+        loop = self.sb.get_event_loop()
+        loop.run_until_complete(tab.send(dispatch(
+            type_="keyDown",
+            modifiers=modifiers,
+            key=key,
+            code=code,
+            windows_virtual_key_code=vk,
+            native_virtual_key_code=vk,
+            commands=commands or [],
+        )))
+        loop.run_until_complete(tab.send(dispatch(
+            type_="keyUp",
+            modifiers=modifiers,
+            key=key,
+            code=code,
+            windows_virtual_key_code=vk,
+            native_virtual_key_code=vk,
+        )))
+
+    def _dispatch_key_char(self, char: str) -> None:
+        input_domain = getattr(mycdp, "input_", None)
+        dispatch = getattr(input_domain, "dispatch_key_event", None)
+        if not callable(dispatch):
+            raise RuntimeError("CDP Input.dispatchKeyEvent is unavailable")
+        if not char:
+            return
+        # US keyboard layout mapping (code, Windows virtual key, needs shift).
+        # ord(char) must never be used as a virtual key code: e.g. "." is
+        # ordinal 46 which is VK_DELETE and Chrome would delete instead of type.
+        layout = {
+            " ": ("Space", 32, False),
+            "-": ("Minus", 189, False), "_": ("Minus", 189, True),
+            "=": ("Equal", 187, False), "+": ("Equal", 187, True),
+            "[": ("BracketLeft", 219, False), "{": ("BracketLeft", 219, True),
+            "]": ("BracketRight", 221, False), "}": ("BracketRight", 221, True),
+            "\\": ("Backslash", 220, False), "|": ("Backslash", 220, True),
+            ";": ("Semicolon", 186, False), ":": ("Semicolon", 186, True),
+            "'": ("Quote", 222, False), '"': ("Quote", 222, True),
+            ",": ("Comma", 188, False), "<": ("Comma", 188, True),
+            ".": ("Period", 190, False), ">": ("Period", 190, True),
+            "/": ("Slash", 191, False), "?": ("Slash", 191, True),
+            "`": ("Backquote", 192, False), "~": ("Backquote", 192, True),
+            "!": ("Digit1", 49, True), "@": ("Digit2", 50, True),
+            "#": ("Digit3", 51, True), "$": ("Digit4", 52, True),
+            "%": ("Digit5", 53, True), "^": ("Digit6", 54, True),
+            "&": ("Digit7", 55, True), "*": ("Digit8", 56, True),
+            "(": ("Digit9", 57, True), ")": ("Digit0", 48, True),
+        }
+        if char.isalpha():
+            code = f"Key{char.upper()}"
+            vk = ord(char.upper())
+            shift = char.isupper()
+        elif char.isdigit():
+            code = f"Digit{char}"
+            vk = ord(char)
+            shift = False
+        elif char in layout:
+            code, vk, shift = layout[char]
+        else:
+            # Non-ASCII / unmapped characters (umlauts, etc.): use the IME text
+            # insertion path so the exact character lands without fake key codes.
+            tab = self.sb.get_active_tab()
+            loop = self.sb.get_event_loop()
+            insert = getattr(input_domain, "insert_text", None)
+            if not callable(insert):
+                raise RuntimeError("CDP Input.insertText is unavailable")
+            loop.run_until_complete(tab.send(insert(char)))
+            return
+        modifiers = 8 if shift else 0
+        tab = self.sb.get_active_tab()
+        loop = self.sb.get_event_loop()
+        loop.run_until_complete(tab.send(dispatch(
+            type_="keyDown",
+            modifiers=modifiers,
+            text=char,
+            unmodified_text=char,
+            key=char,
+            code=code,
+            windows_virtual_key_code=vk,
+            native_virtual_key_code=vk,
+        )))
+        loop.run_until_complete(tab.send(dispatch(
+            type_="keyUp",
+            modifiers=modifiers,
+            key=char,
+            code=code,
+            windows_virtual_key_code=vk,
+            native_virtual_key_code=vk,
+        )))
 
     def _evaluate_function(self, source: str, args: List[Any]) -> Any:
         if not source:
@@ -750,13 +1071,110 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         return True
 
 
+def settle_profile_browser_instances(profile_dir: Path, settle_ms: int) -> None:
+    """Wait for leftover Chromium processes on this profile to exit before launch.
+
+    The monitor lane and the early-gate child lane share one profile partition.
+    Starting a second Chrome on the same user-data-dir while the first is still
+    flushing (or was hard-killed after a transport timeout) makes Chrome wait on
+    the profile singleton lock, which shows up as a >35s RPC start. The profile
+    lease is held by our caller, so any surviving Chrome on this dir is a stale
+    leftover and may be terminated after the grace window.
+    """
+    settle_seconds = max(0.0, settle_ms / 1000.0)
+    profile_target = os.path.normcase(os.path.abspath(os.path.expanduser(str(profile_dir))))
+
+    def stale_pids() -> List[int]:
+        matches: List[int] = []
+        for process in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                name = str(process.info.get("name") or "").lower()
+                if "chrome" not in name and "chromium" not in name:
+                    continue
+                command_line = [str(value) for value in (process.info.get("cmdline") or [])]
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+                continue
+            for index, argument in enumerate(command_line):
+                profile_value = ""
+                if argument.startswith("--user-data-dir="):
+                    profile_value = argument.split("=", 1)[1]
+                elif argument == "--user-data-dir" and index + 1 < len(command_line):
+                    profile_value = command_line[index + 1]
+                if not profile_value:
+                    continue
+                clean = profile_value.strip().strip('"')
+                try:
+                    candidate = os.path.normcase(os.path.abspath(os.path.expanduser(clean)))
+                except OSError:
+                    candidate = os.path.normcase(str(Path(clean)))
+                if candidate == profile_target:
+                    matches.append(int(process.pid))
+                    break
+        return list(dict.fromkeys(matches))
+
+    deadline = time.monotonic() + settle_seconds
+    while settle_seconds > 0:
+        pids = stale_pids()
+        if not pids:
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(min(0.5, max(0.05, deadline - time.monotonic())))
+
+    remaining = stale_pids()
+    if not remaining:
+        return
+    allow_kill = bool(os.environ.get("ARES_PROFILE_SETTLE_KILL") == "1")
+    if not allow_kill:
+        print(
+            f"[profile-settle] stale chrome still alive after {settle_ms}ms "
+            f"pid={remaining} profile={profile_dir} (kill skipped; set "
+            "ARES_PROFILE_SETTLE_KILL=1 to force)",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        f"[profile-settle] terminating stale chrome after {settle_ms}ms "
+        f"pid={remaining} profile={profile_dir}",
+        file=sys.stderr,
+        flush=True,
+    )
+    processes: List[psutil.Process] = []
+    for pid in remaining:
+        try:
+            process = psutil.Process(pid)
+            if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                processes.append(process)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            continue
+    for process in processes:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            pass
+    _, alive = psutil.wait_procs(processes, timeout=max(1.0, settle_seconds)) if processes else ([], [])
+    for process in alive:
+        try:
+            process.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.Error):
+            pass
+
+
 def run(start: Dict[str, Any]) -> int:
     if str(start.get("type") or "") != "start":
         raise ValueError("First command must be type='start'")
     profile_dir = Path(str(start.get("profileDir") or "")).expanduser().resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        settle_ms = int(os.environ.get("ARES_PROFILE_PRE_START_SETTLE_MS") or 20_000)
+    except ValueError:
+        settle_ms = 20_000
+    settle_ms = min(120_000, max(0, settle_ms))
+    settle_profile_browser_instances(profile_dir, settle_ms)
     user_agent = str(start.get("userAgent") or "").strip() or None
     language = str(start.get("locale") or "").strip() or None
+    monitor_mode = bool(os.environ.get("ARES_SB_MONITOR_MODE") == "1")
     adapter = SeleniumBaseCdpAdapter(
         profile_dir=profile_dir,
         headless=bool(start.get("headless", False)),
@@ -767,6 +1185,7 @@ def run(start: Dict[str, Any]) -> int:
         timezone=str(start.get("timezoneId") or "").strip() or None,
         target_id=str(start.get("targetId") or "").strip() or None,
         account_id=str(start.get("accountId") or "").strip() or None,
+        monitor_mode=monitor_mode,
     )
     runtime = TaskRpcRuntime(adapter, user_agent=user_agent, language=language)
 

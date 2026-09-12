@@ -24,37 +24,6 @@ body {
   overflow-x: hidden;
 }
 
-.app-shell::before,
-.app-shell::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -2;
-}
-
-.app-shell::before {
-  opacity: .62;
-  background-image:
-    radial-gradient(circle, rgba(255,255,255,.78) 0 1px, transparent 1.2px),
-    radial-gradient(circle, rgba(156,177,255,.62) 0 1px, transparent 1.3px),
-    radial-gradient(circle, rgba(255,255,255,.42) 0 .8px, transparent 1px);
-  background-size: 97px 97px, 151px 151px, 61px 61px;
-  background-position: 5px 16px, 37px 71px, 21px 44px;
-  animation: ares-stars-drift 80s linear infinite;
-}
-
-.app-shell::after {
-  inset: -20vh -20vw;
-  z-index: -1;
-  opacity: .55;
-  background:
-    linear-gradient(115deg, transparent 43%, rgba(255,255,255,.0) 47%, rgba(196,211,255,.9) 49%, rgba(105,130,255,.45) 50%, transparent 53%) 0 0 / 520px 330px no-repeat,
-    linear-gradient(115deg, transparent 43%, rgba(255,255,255,.0) 47%, rgba(222,231,255,.75) 49%, rgba(95,168,216,.35) 50%, transparent 53%) 68vw 36vh / 430px 270px no-repeat;
-  animation: ares-shooting-stars 15s ease-in-out infinite;
-  filter: blur(.15px) drop-shadow(0 0 7px rgba(142,162,255,.5));
-}
-
 .sidebar,
 .topbar,
 .panel,
@@ -65,8 +34,6 @@ body {
 .proxy-card,
 .shop-card,
 .history-disclosure {
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
 }
 
 .sidebar {
@@ -143,37 +110,4 @@ textarea:focus {
 
 .builder-divider {
   opacity: .62;
-}
-
-@keyframes ares-stars-drift {
-  from { transform: translate3d(0, 0, 0); }
-  to { transform: translate3d(-97px, 61px, 0); }
-}
-
-@keyframes ares-shooting-stars {
-  0%, 17% { transform: translate3d(-42vw, -26vh, 0); opacity: 0; }
-  20% { opacity: .7; }
-  30% { transform: translate3d(48vw, 34vh, 0); opacity: 0; }
-  31%, 62% { transform: translate3d(-18vw, -34vh, 0); opacity: 0; }
-  65% { opacity: .48; }
-  76% { transform: translate3d(42vw, 44vh, 0); opacity: 0; }
-  100% { opacity: 0; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .app-shell::before,
-  .app-shell::after {
-    animation: none !important;
-  }
-
-  .side-nav button:hover,
-  .profile-tabs button:hover {
-    transform: none;
-  }
-}
-
-@media (max-width: 900px) {
-  .app-shell::after {
-    opacity: .34;
-  }
 }

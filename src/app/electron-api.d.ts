@@ -9,6 +9,11 @@ declare global {
       getProfilePayment(profileId: string): Promise<any>;
       saveProfilePayment(profileId: string, payment: unknown): Promise<any>;
       deleteProfilePayment(profileId: string): Promise<any>;
+      listPaymentCards(): Promise<any>;
+      savePaymentCard(cardId: string, payment: unknown, label?: string): Promise<any>;
+      deletePaymentCard(cardId: string): Promise<any>;
+      getProfilePaymentCard(profileId: string): Promise<any>;
+      assignProfilePaymentCard(profileId: string, cardId: string | null): Promise<any>;
       getProfileBrowserStatus(profileId: string): Promise<any>;
       openProfileBrowser(profileId: string, startUrl?: string): Promise<any>;
       closeProfileBrowser(profileId: string): Promise<any>;

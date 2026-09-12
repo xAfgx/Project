@@ -12,7 +12,7 @@ import psutil
 from seleniumbase import sb_cdp
 
 from base_target_adapter import BaseTargetAdapter
-from cdp_challenge_observer import ChallengeWatchdog
+from cdp_challenge_observer import ChallengeWatchdog, challenge_present_fast
 from challenge_state_tracker import ChallengeStateTracker
 from cdp_fetch_bridge import NetworkAnomalyEliminator, CDPFetchBridge
 from cdp_session_recovery import (
@@ -35,7 +35,6 @@ from webrtc_proxy_policy import install_webrtc_proxy_policy
 
 class SeleniumBaseCdpAdapter(BaseTargetAdapter):
     """Single ARES boundary around SeleniumBase Pure CDP / MyCDP."""
-
     def __init__(
         self,
         *,
@@ -49,8 +48,10 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         timezone: str | None = None,
         target_id: str | None = None,
         account_id: str | None = None,
+        monitor_mode: bool = False,
     ) -> None:
         self.bind_identity(target_id=target_id, account_id=account_id)
+        self._monitor_mode = bool(monitor_mode)
         self.profile_dir = Path(profile_dir).expanduser().resolve()
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._runtime_identity = BrowserRuntimeIdentity.create(self.profile_dir)
@@ -421,18 +422,65 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         self._record_debug_capture(event, result)
         return result
 
+    def _enable_focus_emulation(self) -> None:
+        """Make the page report `document.hasFocus() === true` at the CDP level.
+
+        The OS window can be foregrounded while Chrome keeps content focus on
+        the omnibox or a bubble, so `document.hasFocus()` stays false and
+        BrowserScan flags an `unattended-session`. `Emulation.setFocusEmulation-
+        Enabled` is a browser-level emulation command: no page JavaScript, no
+        property patch, no CDP input, no runtime interaction. It survives
+        navigations and is re-asserted after session recovery.
+        """
+        try:
+            if str(os.environ.get("ARES_DISABLE_FOCUS_EMULATION") or "").strip() == "1":
+                return
+            command = getattr(getattr(mycdp, "emulation", None), "set_focus_emulation_enabled", None)
+            if not callable(command):
+                self._focus_diag("focus-emulation unavailable")
+                return
+            tab = self._sb.get_active_tab()
+            loop = self._sb.get_event_loop()
+            loop.run_until_complete(tab.send(command(enabled=True)))
+            self._focus_diag("focus-emulation enabled")
+        except Exception as exc:
+            self._focus_diag(f"focus-emulation error {type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _focus_diag(message: str) -> None:
+        try:
+            import tempfile
+
+            path = Path(tempfile.gettempdir()) / "ares-focus-diag.log"
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(f"{time.time():.3f} {message}\n")
+        except Exception:
+            pass
+
     def goto(self, url: str) -> None:
+        self._enable_focus_emulation()
         self._sb.goto(url)
         self._challenge_watchdog.reset()
         ensure_live_cdp_session(self._sb, expected_url=url)
         wait_for_document_ready(self._sb)
         self._challenge_tracker.wait_for_stable_challenge()
-        captcha_frame_recovery(self._sb)
+        self._captcha_frame_recovery_if_challenge()
+        self._visual_interactions.reset_after_navigation()
         self._watchdog.reset()
         initial = self._watchdog.poll()
         self._last_watchdog_state = initial
         self._capture_debug("page-load", generation=int(initial.get("generation") or 0), force=True)
         self._poll_observation_watchdog(force=True)
+
+    def _captcha_frame_recovery_if_challenge(self) -> Dict[str, Any]:
+        """Run CAPTCHA recovery only when a challenge is actually present.
+
+        The presence check is pure CDP DOM domain (shallow getDocument +
+        querySelector), no JavaScript and no full-document transfer.
+        """
+        if not challenge_present_fast(self._sb):
+            return {"method": "none", "acted": False, "reason": "no-challenge"}
+        return captcha_frame_recovery(self._sb)
 
     def challenge_state(self) -> Dict[str, Any]:
         return self._challenge_tracker.poll()
@@ -572,7 +620,7 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         return [self._cookie_to_snapshot(cookie) for cookie in self._sb.get_all_cookies()]
 
     def poll_runtime(self) -> None:
-        if not self._closed:
+        if not self._closed and not self._monitor_mode:
             self.poll_challenge_watchdog()
             self._poll_observation_watchdog()
 
@@ -595,11 +643,95 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         """Force one observation+auto-interaction cycle regardless of the
         throttle/quiet window. Used after navigation/redirects so a captcha that
         appears only AFTER a redirect is still solved instead of waiting for an
-        idle-poll that may never run during an active checkout flow."""
+        idle-poll that may never run during an active checkout flow.
+
+        A cheap DOM probe runs first: on pages without a challenge (e.g. the
+        storefront during normal checkout) the expensive screenshot/capture +
+        orchestrator cycle is skipped, so the synchronous command loop is never
+        blocked by heavy visual inference when there is nothing to solve.
+        """
+        import time as _t
+        def _trace(msg: str) -> None:
+            print(f"[captcha-poll] {msg} t={_t.monotonic():.1f}", file=sys.stderr, flush=True)
+        _trace("start")
+        try:
+            present = challenge_present_fast(self._sb)
+        except Exception:
+            present = False
+        _trace(f"challenge_present_fast={present}")
+        if not present:
+            return False
+        # Step 1: click the reCAPTCHA checkbox through SeleniumBase's built-in
+        # helper (uc_gui_click_rc / solve_captcha). This resolves the common
+        # "I'm not a robot" checkbox without the local model or a provider.
+        # The helper can block for a long time, so it runs in a bounded thread
+        # and is rate-limited to avoid clicking the checkbox twice in a row.
+        now = time.monotonic()
+        if now - getattr(self, "_last_checkbox_click_at", 0.0) >= 6.0:
+            self._last_checkbox_click_at = now
+            try:
+                import threading
+                from cdp_session_recovery import captcha_frame_recovery
+                holder: list[Any] = []
+
+                def _click() -> None:
+                    try:
+                        holder.append(captcha_frame_recovery(self._sb))
+                    except Exception as exc:
+                        holder.append({"method": "error", "error": str(exc)[:120]})
+
+                worker = threading.Thread(target=_click, daemon=True)
+                worker.start()
+                worker.join(timeout=6.0)
+                if worker.is_alive():
+                    _trace("checkbox-click still running (bounded, continuing)")
+                else:
+                    recovery = holder[0] if holder else {}
+                    _trace(f"checkbox-click method={recovery.get('method')} acted={recovery.get('acted')}")
+            except Exception:
+                _trace("checkbox-click error")
+        else:
+            _trace("checkbox-click skipped (cooldown)")
+        try:
+            _t.sleep(1.2)
+        except Exception:
+            pass
+        try:
+            still_present = challenge_present_fast(self._sb)
+        except Exception:
+            still_present = present
+        if not still_present:
+            _trace("checkbox solved the challenge")
+            return True
+        # Step 2: API-only mode: skip the local model entirely and let the
+        # configured provider solve. Used by monitor, early-gate and Shopify
+        # lanes alike.
+        mode = "siglip"
+        try:
+            from captcha_api_provider import captcha_mode
+            mode = captcha_mode()
+        except Exception:
+            mode = "siglip"
+        if mode == "api":
+            solver = getattr(self._visual_interactions, "_captcha_api_solver", None)
+            if solver is not None:
+                try:
+                    outcome = solver.solve()
+                    solved = bool((outcome or {}).get("solved"))
+                    _trace(f"api-solve solved={solved} provider={str((outcome or {}).get('provider') or '')}")
+                    if solved:
+                        return True
+                except Exception:
+                    _trace("api-solve error")
+            _trace("api-only mode: local model skipped")
+            return False
+        _trace("starting heavy watchdog")
         try:
             self._poll_observation_watchdog(force=True)
+            _trace("watchdog done")
             return True
         except Exception:
+            _trace("watchdog error")
             return False
 
     def is_running(self) -> bool:
@@ -616,7 +748,34 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
         except (psutil.AccessDenied, psutil.Error):
             return True
 
+    def _vision_available(self) -> bool:
+        vision = getattr(self, "_visual_interactions", None)
+        classifier = getattr(vision, "_vision", None) if vision is not None else None
+        if classifier is None:
+            return True
+        if getattr(classifier, "offline", False):
+            return False
+        status_getter = getattr(classifier, "status", None)
+        if callable(status_getter):
+            try:
+                status = status_getter()
+            except Exception:
+                return True
+            if isinstance(status, dict):
+                if status.get("offline"):
+                    return False
+                if status.get("ready") is False and not status.get("sharedService"):
+                    return False
+        return True
+
     def _poll_observation_watchdog(self, *, force: bool = False) -> None:
+        if self._monitor_mode and not force:
+            # Monitor workers only read the queue DOM via passiveQueueSnapshot.
+            # Skip the passive screenshot/capture + orchestrator cycles that can
+            # block the synchronous command loop on large pages and starve the
+            # `close` command. Explicit solveCaptcha() (force=True) is still
+            # honored so a captcha appearing after the queue redirect is solved.
+            return
         now = time.monotonic()
         if not force and now < self._next_watchdog_poll:
             return
@@ -645,6 +804,10 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
 
         if not force and not action_changed and not visual_changed and not frame_heartbeat and not retry_pending:
             return
+        # NOTE: the offline/vision-unavailable skip lives in
+        # AutoInteractionController._handle_grid (grid only). Returning early
+        # here would also suppress the pure-DOM slider detection, which never
+        # needs the vision model.
         if visual_changed:
             try:
                 self._capture_for_events(state)

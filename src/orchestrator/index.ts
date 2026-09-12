@@ -145,7 +145,8 @@ export class TaskOrchestrator {
 
       let success: boolean;
       try {
-        success = await this.executor.execute(task);
+        const result = await this.executor.execute(task);
+        success = typeof result === "boolean" ? result : result.success;
       } catch (error) {
         const wasPausedWhileRunning = this.pausedRunningTaskIds.delete(task.id);
         const currentState = task.state as TaskState;
