@@ -1,4 +1,4 @@
-name: Windows Node hard-crash smoke
+name: Windows Node hard-crash diagnostics
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  hardcrash-smoke:
+  hardcrash-diagnostics:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -29,13 +29,99 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
 
-      - name: Run five real Node to Python to Chrome parent-crash smokes
+      - name: Run five instrumented parent-crash sessions
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $sessionCount = 5
-          $root = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-multi'
+          $root = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-diagnostics'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          @'
+          from __future__ import annotations
+          import atexit
+          import os
+          import sys
+          import time
+          import traceback
+          from pathlib import Path
+
+          repo = Path(__file__).resolve().parent
+          module_dir = repo / "python" / "seleniumbase_cdp"
+          sys.path.insert(0, str(module_dir))
+          import task_browser_worker as base
+
+          slot = os.environ.get("ARES_DIAG_SLOT", "?")
+          diag_file = Path(os.environ["ARES_DIAG_FILE"])
+
+          def mark(name: str, detail: str = "") -> None:
+              line = f"DIAG slot={slot} event={name} pid={os.getpid()} t={time.monotonic():.6f}"
+              if detail:
+                  line += f" detail={detail}"
+              try:
+                  with diag_file.open("a", encoding="utf-8") as handle:
+                      handle.write(line + "\n")
+                      handle.flush()
+                      os.fsync(handle.fileno())
+              except Exception:
+                  pass
+
+          original_reader = base.command_reader
+          def diagnostic_reader(target):
+              mark("COMMAND_READER_ENTER")
+              try:
+                  return original_reader(target)
+              except BaseException as exc:
+                  mark("COMMAND_READER_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:300]}")
+                  raise
+              finally:
+                  mark("STDIN_EOF_READER_EXIT")
+          base.command_reader = diagnostic_reader
+
+          original_poll = base.SeleniumBaseCdpAdapter.poll_runtime
+          def diagnostic_poll(self):
+              try:
+                  return original_poll(self)
+              except BaseException as exc:
+                  mark("POLL_RUNTIME_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:300]}")
+                  raise
+          base.SeleniumBaseCdpAdapter.poll_runtime = diagnostic_poll
+
+          original_quit = base.SeleniumBaseCdpAdapter.quit
+          def diagnostic_quit(self):
+              mark("ENTER_ADAPTER_QUIT")
+              try:
+                  result = original_quit(self)
+              except BaseException as exc:
+                  mark("ADAPTER_QUIT_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:500]}")
+                  raise
+              else:
+                  mark("ADAPTER_QUIT_RETURN")
+                  return result
+              finally:
+                  mark("ADAPTER_QUIT_FINALLY")
+          base.SeleniumBaseCdpAdapter.quit = diagnostic_quit
+
+          @atexit.register
+          def diagnostic_atexit() -> None:
+              mark("PYTHON_ATEXIT")
+
+          mark("WRAPPER_START")
+          try:
+              rc = base.main()
+              mark("MAIN_RETURN", str(rc))
+          except BaseException as exc:
+              mark("WRAPPER_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:500]}")
+              try:
+                  mark("WRAPPER_TRACE", traceback.format_exc().replace("\n", " | ")[-1500:])
+              except Exception:
+                  pass
+              raise
+          finally:
+              mark("WRAPPER_FINALLY")
+
+          raise SystemExit(rc)
+          '@ | Set-Content -Path diagnostic_worker.py -Encoding UTF8
 
           @'
           const { spawn } = require('child_process');
@@ -44,6 +130,7 @@ jobs:
 
           const slot = String(process.argv[2] || '0');
           const profileDir = String(process.argv[3] || '');
+          const diagFile = String(process.argv[4] || '');
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
@@ -51,11 +138,16 @@ jobs:
 
           const child = spawn(
             pythonExe,
-            ['-u', 'python/seleniumbase_cdp/task_browser_worker.py'],
+            ['-u', 'diagnostic_worker.py'],
             {
               stdio: ['pipe', 'pipe', 'pipe'],
               windowsHide: true,
-              env: { ...process.env, PYTHONUNBUFFERED: '1' }
+              env: {
+                ...process.env,
+                PYTHONUNBUFFERED: '1',
+                ARES_DIAG_SLOT: slot,
+                ARES_DIAG_FILE: diagFile
+              }
             }
           );
 
@@ -65,8 +157,8 @@ jobs:
 
           child.stdin.write(JSON.stringify({
             type: 'start',
-            requestId: `hardcrash-smoke-start-${slot}`,
-            taskId: `hardcrash-smoke-task-${slot}`,
+            requestId: `hardcrash-diagnostic-start-${slot}`,
+            taskId: `hardcrash-diagnostic-task-${slot}`,
             profileDir,
             headless: true,
             browserArgs: []
@@ -78,16 +170,18 @@ jobs:
           $sessions = @()
           for ($i = 1; $i -le $sessionCount; $i++) {
             $profile = Join-Path $root "profile-$i"
+            $diag = Join-Path $root "session-$i.diag.log"
             New-Item -ItemType Directory -Force -Path $profile | Out-Null
-            $parent = Start-Process node -ArgumentList @('crash-parent.js', "$i", $profile) -PassThru -RedirectStandardOutput "session-$i.node.stdout.log" -RedirectStandardError "session-$i.node.stderr.log"
+            $parent = Start-Process node -ArgumentList @('crash-parent.js', "$i", $profile, $diag) -PassThru -RedirectStandardOutput "session-$i.node.stdout.log" -RedirectStandardError "session-$i.node.stderr.log"
             $sessions += [pscustomobject]@{
               Slot = $i
               Profile = $profile
+              Diag = $diag
               Parent = $parent
               PythonPid = $null
               ChromePid = $null
             }
-            Write-Host "SESSION $i Node parent PID=$($parent.Id) profile=$profile"
+            Write-Host "SESSION $i Node=$($parent.Id) profile=$profile"
           }
 
           $deadline = (Get-Date).AddMinutes(5)
@@ -98,7 +192,6 @@ jobs:
                 $readyCount++
                 continue
               }
-
               $pidFile = "session-$($session.Slot).python.pid"
               $stdoutFile = "session-$($session.Slot).python.stdout.log"
               if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
@@ -114,35 +207,17 @@ jobs:
                   $readyCount++
                 }
               }
-
               if ($session.Parent.HasExited -and -not $session.ChromePid) {
-                throw "SESSION $($session.Slot) Node parent exited before Python worker became ready. exit=$($session.Parent.ExitCode)"
+                throw "SESSION $($session.Slot) Node parent exited before ready."
               }
             }
-
             if ($readyCount -eq $sessionCount) { break }
             Start-Sleep -Milliseconds 500
           }
 
           $notReady = @($sessions | Where-Object { -not $_.PythonPid -or -not $_.ChromePid })
           if ($notReady.Count -gt 0) {
-            foreach ($session in $notReady) {
-              Write-Host "SESSION $($session.Slot) NOT READY"
-              $stdoutFile = "session-$($session.Slot).python.stdout.log"
-              $stderrFile = "session-$($session.Slot).python.stderr.log"
-              if (Test-Path $stdoutFile) { Get-Content $stdoutFile }
-              if (Test-Path $stderrFile) { Get-Content $stderrFile }
-            }
-            throw "$($notReady.Count) of $sessionCount SeleniumBase workers did not become ready."
-          }
-
-          foreach ($session in $sessions) {
-            if (-not (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)) {
-              throw "SESSION $($session.Slot) Python worker was not alive before parent crash."
-            }
-            if (-not (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)) {
-              throw "SESSION $($session.Slot) Chrome was not alive before parent crash."
-            }
+            throw "$($notReady.Count) of $sessionCount workers did not become ready."
           }
 
           Write-Host "Hard-killing all $sessionCount Node parents..."
@@ -150,9 +225,20 @@ jobs:
             Stop-Process -Id $session.Parent.Id -Force -ErrorAction Stop
           }
 
-          function Get-SessionState($session, $label) {
+          Start-Sleep -Seconds 3
+          Write-Host '--- DIAGNOSTICS AFTER 3s ---'
+          foreach ($session in $sessions) {
             $pythonAlive = $null -ne (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)
-            $reportedChromeAlive = $null -ne (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)
+            $chromeAlive = $null -ne (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)
+            Write-Host "SESSION $($session.Slot) after3s python=$pythonAlive chrome=$chromeAlive"
+            if (Test-Path $session.Diag) { Get-Content $session.Diag }
+          }
+
+          Start-Sleep -Seconds 17
+          Write-Host '--- DIAGNOSTICS AFTER 20s ---'
+          $zombieSessions = 0
+          foreach ($session in $sessions) {
+            $pythonAlive = $null -ne (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)
             $profileChromes = @(
               Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
@@ -161,64 +247,42 @@ jobs:
                   $_.CommandLine.Contains($session.Profile)
                 }
             )
-            Write-Host "RESULT $label session=$($session.Slot) pythonAlive=$pythonAlive reportedChromeAlive=$reportedChromeAlive profileChromeCount=$($profileChromes.Count)"
-            foreach ($proc in $profileChromes) {
-              Write-Host "  session=$($session.Slot) Chrome PID=$($proc.ProcessId) PPID=$($proc.ParentProcessId)"
-            }
-            return [pscustomobject]@{
-              Slot = $session.Slot
-              PythonAlive = $pythonAlive
-              ReportedChromeAlive = $reportedChromeAlive
-              ProfileChromes = $profileChromes
-            }
+            if ($profileChromes.Count -gt 0) { $zombieSessions++ }
+            Write-Host "SESSION $($session.Slot) after20s python=$pythonAlive profileChromeCount=$($profileChromes.Count)"
+            if (Test-Path $session.Diag) { Get-Content $session.Diag }
           }
+          Write-Host "SUMMARY sessions=$sessionCount zombieSessionsAfter20s=$zombieSessions"
 
-          Start-Sleep -Seconds 5
-          $states5 = @()
-          foreach ($session in $sessions) {
-            $states5 += Get-SessionState $session 'after5s'
-          }
-
-          Start-Sleep -Seconds 15
-          $states20 = @()
-          foreach ($session in $sessions) {
-            $states20 += Get-SessionState $session 'after20s'
-          }
-
-          $zombieSessions = @($states20 | Where-Object {
-            $_.PythonAlive -or $_.ReportedChromeAlive -or $_.ProfileChromes.Count -gt 0
-          })
-
-          Write-Host "SUMMARY sessions=$sessionCount zombiesAfter20s=$($zombieSessions.Count)"
-          foreach ($state in $zombieSessions) {
-            Write-Host "SUMMARY zombieSession=$($state.Slot) python=$($state.PythonAlive) chrome=$($state.ReportedChromeAlive) chromeCount=$($state.ProfileChromes.Count)"
-          }
-
-          # Always clean up all isolated test processes before reporting the result.
+          # Cleanup only the isolated test processes/profiles after collecting evidence.
           foreach ($session in $sessions) {
             Stop-Process -Id $session.PythonPid -Force -ErrorAction SilentlyContinue
-          }
-          foreach ($state in $states20) {
-            foreach ($proc in $state.ProfileChromes) {
+            $profileChromes = @(
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                  $_.CommandLine -and
+                  $_.CommandLine.Contains($session.Profile)
+                }
+            )
+            foreach ($proc in $profileChromes) {
               Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
             }
           }
 
-          if ($zombieSessions.Count -gt 0) {
-            Write-Error "ZOMBIE_REPRODUCED_MULTI: $($zombieSessions.Count) of $sessionCount independent Chrome sessions still had Python and/or profile-owned Chrome after 20 seconds."
+          if ($zombieSessions -gt 0) {
+            Write-Error "DIAGNOSTIC_ZOMBIE_REPRODUCED: $zombieSessions of $sessionCount sessions retained profile Chrome after 20 seconds."
             exit 42
           }
 
-          Write-Host "CLEAN_EXIT_MULTI: all $sessionCount independent sessions disappeared after Node parent death."
-
-      - name: Upload smoke logs
+      - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-node-hardcrash-multi-smoke-logs
+          name: windows-node-hardcrash-diagnostic-logs
           path: |
             session-*.python.stdout.log
             session-*.python.stderr.log
             session-*.node.stdout.log
             session-*.node.stderr.log
+            ${{ runner.temp }}/ares-hardcrash-diagnostics/session-*.diag.log
           if-no-files-found: ignore
