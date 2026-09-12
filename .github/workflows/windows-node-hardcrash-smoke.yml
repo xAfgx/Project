@@ -1,4 +1,4 @@
-name: Windows OOPIF parent-crash smoke
+name: Windows parent-death layer binary search
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  oopif-hardcrash:
+  layer-binary-search:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,198 +29,317 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
 
-      - name: Run five production-entry OOPIF hard-crash sessions
+      - name: Binary-search exact parent-death layer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $sessionCount = 5
-          $root = Join-Path $env:RUNNER_TEMP 'ares-oopif-hardcrash'
+          $root = Join-Path $env:RUNNER_TEMP 'ares-parent-death-layer-search'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          @'
+          from __future__ import annotations
+          import atexit
+          import json
+          import os
+          import queue
+          import sys
+          import threading
+          import time
+          import traceback
+          from pathlib import Path
+
+          mode = str(sys.argv[1])
+          profile = Path(sys.argv[2]).resolve()
+          diag = Path(sys.argv[3]).resolve()
+          module_dir = Path.cwd() / 'python' / 'seleniumbase_cdp'
+          sys.path.insert(0, str(module_dir))
+
+          def mark(event: str, detail: str = '') -> None:
+              line = f"event={event} mode={mode} pid={os.getpid()} t={time.monotonic():.6f}"
+              if detail:
+                  line += f" detail={detail}"
+              try:
+                  with diag.open('a', encoding='utf-8') as handle:
+                      handle.write(line + '\n')
+                      handle.flush()
+                      os.fsync(handle.fileno())
+              except Exception:
+                  pass
+
+          original_os_exit = os._exit
+          def traced_os_exit(code: int) -> None:
+              try:
+                  stack = ' | '.join(traceback.format_stack(limit=20)).replace('\n', ' ')
+                  mark('OS__EXIT_CALLED', f"code={code} stack={stack[-3500:]}")
+              finally:
+                  original_os_exit(code)
+          os._exit = traced_os_exit
+
+          @atexit.register
+          def at_exit() -> None:
+              mark('ATEXIT')
+
+          def start_stdin_reader() -> None:
+              def reader() -> None:
+                  mark('STDIN_READER_ENTER')
+                  try:
+                      for _line in sys.stdin:
+                          pass
+                  except BaseException as exc:
+                      mark('STDIN_READER_EXCEPTION', f"{type(exc).__name__}:{exc}")
+                  finally:
+                      mark('STDIN_EOF')
+              threading.Thread(target=reader, daemon=True, name='probe-stdin-reader').start()
+
+          adapter = None
+          runtime = None
+          commands = None
+
+          mark('PROCESS_START')
+
+          if mode == 'plain':
+              pass
+          elif mode == 'stdin':
+              start_stdin_reader()
+          elif mode == 'oopif_import':
+              import task_browser_worker_oopif as oopif
+              mark('OOPIF_IMPORT_DONE')
+              start_stdin_reader()
+          elif mode in {'adapter_sleep', 'adapter_is_running', 'adapter_poll', 'worker_idle'}:
+              import task_browser_worker_oopif as oopif
+              mark('OOPIF_IMPORT_DONE')
+              Adapter = oopif.impl.base.SeleniumBaseCdpAdapter
+              adapter = Adapter(
+                  profile_dir=profile,
+                  headless=True,
+                  proxy=None,
+                  user_agent=None,
+                  browser_args=[],
+                  language=None,
+                  timezone=None,
+                  target_id=None,
+                  account_id=None,
+                  monitor_mode=False,
+              )
+              mark('ADAPTER_READY', f"chromePid={adapter.chrome_pid}")
+              if mode == 'worker_idle':
+                  runtime = oopif.impl.base.TaskRpcRuntime(adapter, user_agent=None, language=None)
+                  commands = queue.Queue()
+                  threading.Thread(
+                      target=oopif.impl.base.command_reader,
+                      args=(commands,),
+                      daemon=True,
+                      name='ares-command-reader',
+                  ).start()
+                  mark('WORKER_RUNTIME_READY')
+              else:
+                  start_stdin_reader()
+          else:
+              raise ValueError(mode)
+
+          ready = {
+              'mode': mode,
+              'pythonPid': os.getpid(),
+              'chromePid': int(adapter.chrome_pid) if adapter and adapter.chrome_pid else 0,
+          }
+          print('PROBE_READY ' + json.dumps(ready, separators=(',', ':')), flush=True)
+          mark('READY_EMITTED')
+
+          try:
+              while True:
+                  if mode == 'adapter_is_running':
+                      try:
+                          alive = bool(adapter.is_running())
+                          mark('IS_RUNNING', str(alive))
+                      except BaseException as exc:
+                          mark('IS_RUNNING_EXCEPTION', f"{type(exc).__name__}:{exc}")
+                          raise
+                  elif mode == 'adapter_poll':
+                      try:
+                          alive = bool(adapter.is_running())
+                          mark('IS_RUNNING', str(alive))
+                          adapter.poll_runtime()
+                          mark('POLL_RETURN')
+                      except BaseException as exc:
+                          mark('POLL_OR_ISRUNNING_EXCEPTION', f"{type(exc).__name__}:{exc}")
+                          raise
+                  elif mode == 'worker_idle':
+                      if not adapter.is_running():
+                          mark('WORKER_IS_RUNNING_FALSE')
+                          break
+                      try:
+                          command = commands.get(timeout=0.25)
+                          mark('WORKER_COMMAND', str(command.get('type') if isinstance(command, dict) else type(command).__name__))
+                      except queue.Empty:
+                          mark('WORKER_QUEUE_EMPTY')
+                          adapter.poll_runtime()
+                          mark('WORKER_POLL_RETURN')
+                          continue
+                  time.sleep(0.25)
+          except BaseException as exc:
+              mark('MAIN_LOOP_EXCEPTION', f"{type(exc).__name__}:{exc}")
+              raise
+          finally:
+              mark('MAIN_LOOP_FINALLY')
+              if adapter is not None:
+                  try:
+                      mark('QUIT_ENTER')
+                      adapter.quit()
+                      mark('QUIT_RETURN')
+                  except BaseException as exc:
+                      mark('QUIT_EXCEPTION', f"{type(exc).__name__}:{exc}")
+          '@ | Set-Content -Path layer_probe.py -Encoding UTF8
 
           @'
           const { spawn } = require('child_process');
           const fs = require('fs');
           const path = require('path');
 
-          const slot = String(process.argv[2]);
-          const profileDir = String(process.argv[3]);
+          const mode = String(process.argv[2]);
+          const profile = String(process.argv[3]);
+          const diag = String(process.argv[4]);
+          const prefix = String(process.argv[5]);
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
-          const prefix = `session-${slot}`;
 
-          const child = spawn(
-            pythonExe,
-            ['-u', 'python/seleniumbase_cdp/task_browser_worker_oopif.py'],
-            {
-              stdio: ['pipe', 'pipe', 'pipe'],
-              windowsHide: true,
-              env: { ...process.env, PYTHONUNBUFFERED: '1' }
-            }
-          );
+          const child = spawn(pythonExe, ['-u', 'layer_probe.py', mode, profile, diag], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true,
+            env: { ...process.env, PYTHONUNBUFFERED: '1' }
+          });
 
           fs.writeFileSync(`${prefix}.python.pid`, String(child.pid));
           child.stdout.pipe(fs.createWriteStream(`${prefix}.python.stdout.log`, { flags: 'a' }));
           child.stderr.pipe(fs.createWriteStream(`${prefix}.python.stderr.log`, { flags: 'a' }));
-
-          child.stdin.write(JSON.stringify({
-            type: 'start',
-            requestId: `oopif-hardcrash-start-${slot}`,
-            taskId: `oopif-hardcrash-task-${slot}`,
-            profileDir,
-            headless: true,
-            browserArgs: []
-          }) + '\n');
-
+          child.stdin.write('control-channel-open\n');
           setInterval(() => {}, 1000);
-          '@ | Set-Content -Path crash-parent.js -Encoding UTF8
+          '@ | Set-Content -Path layer_parent.js -Encoding UTF8
 
-          $sessions = @()
-          for ($i = 1; $i -le $sessionCount; $i++) {
-            $profile = Join-Path $root "profile-$i"
-            New-Item -ItemType Directory -Force -Path $profile | Out-Null
-            $parent = Start-Process node -ArgumentList @('crash-parent.js', "$i", $profile) -PassThru -RedirectStandardOutput "session-$i.node.stdout.log" -RedirectStandardError "session-$i.node.stderr.log"
-            $sessions += [pscustomobject]@{
-              Slot = $i
-              Profile = $profile
-              Parent = $parent
-              PythonPid = $null
-              PythonProc = $null
-              ChromePid = $null
-            }
-            Write-Host "SESSION $i Node=$($parent.Id) profile=$profile"
-          }
-
-          $deadline = (Get-Date).AddMinutes(5)
-          while ((Get-Date) -lt $deadline) {
-            $readyCount = 0
-            foreach ($session in $sessions) {
-              if ($session.PythonPid -and $session.ChromePid) {
-                $readyCount++
-                continue
-              }
-              $pidFile = "session-$($session.Slot).python.pid"
-              $stdoutFile = "session-$($session.Slot).python.stdout.log"
-              if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
-                $readyLine = Get-Content $stdoutFile -ErrorAction SilentlyContinue |
-                  Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
-                  Select-Object -Last 1
-                if ($readyLine) {
-                  $session.PythonPid = [int](Get-Content $pidFile)
-                  $session.PythonProc = Get-Process -Id $session.PythonPid -ErrorAction Stop
-                  $jsonText = $readyLine -replace '^ARES_SB_TASK\s*', ''
-                  $ready = $jsonText | ConvertFrom-Json
-                  $session.ChromePid = [int]$ready.pid
-                  Write-Host "SESSION $($session.Slot) READY node=$($session.Parent.Id) python=$($session.PythonPid) chrome=$($session.ChromePid)"
-                  $readyCount++
-                }
-              }
-              if ($session.Parent.HasExited -and -not $session.ChromePid) {
-                Write-Host "--- SESSION $($session.Slot) stdout ---"
-                if (Test-Path $stdoutFile) { Get-Content $stdoutFile }
-                $stderrFile = "session-$($session.Slot).python.stderr.log"
-                Write-Host "--- SESSION $($session.Slot) stderr ---"
-                if (Test-Path $stderrFile) { Get-Content $stderrFile }
-                throw "SESSION $($session.Slot) Node parent exited before OOPIF worker became ready."
-              }
-            }
-            if ($readyCount -eq $sessionCount) { break }
-            Start-Sleep -Milliseconds 500
-          }
-
-          $notReady = @($sessions | Where-Object { -not $_.PythonPid -or -not $_.ChromePid })
-          if ($notReady.Count -gt 0) {
-            foreach ($session in $notReady) {
-              Write-Host "--- SESSION $($session.Slot) stdout ---"
-              if (Test-Path "session-$($session.Slot).python.stdout.log") { Get-Content "session-$($session.Slot).python.stdout.log" }
-              Write-Host "--- SESSION $($session.Slot) stderr ---"
-              if (Test-Path "session-$($session.Slot).python.stderr.log") { Get-Content "session-$($session.Slot).python.stderr.log" }
-            }
-            throw "$($notReady.Count) of $sessionCount OOPIF workers did not become ready."
-          }
-
-          Write-Host 'Hard-killing Node parents only...'
-          foreach ($session in $sessions) {
-            Stop-Process -Id $session.Parent.Id -Force -ErrorAction Stop
-          }
-
-          function Get-SessionState($session, $label) {
-            $session.PythonProc.Refresh()
-            $pythonExited = $session.PythonProc.HasExited
-            $pythonExit = 'still-running'
-            if ($pythonExited) {
-              try {
-                $code = [int]$session.PythonProc.ExitCode
-                $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($code), 0)
-                $pythonExit = "$code/$(('0x{0:X8}' -f $unsigned))"
-              } catch {
-                $pythonExit = "unavailable:$($_.Exception.Message)"
-              }
-            }
-            $reportedChromeAlive = $null -ne (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)
+          function Kill-ProbeProcesses($probe) {
+            Stop-Process -Id $probe.PythonPid -Force -ErrorAction SilentlyContinue
             $profileChromes = @(
               Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
                   $_.Name -match '^(chrome|chromium).*\.exe$' -and
                   $_.CommandLine -and
-                  $_.CommandLine.Contains($session.Profile)
+                  $_.CommandLine.Contains($probe.Profile)
                 }
             )
-            Write-Host "RESULT $label session=$($session.Slot) pythonExited=$pythonExited pythonExit=$pythonExit reportedChromeAlive=$reportedChromeAlive profileChromeCount=$($profileChromes.Count)"
-            return [pscustomobject]@{
-              Slot = $session.Slot
-              PythonExited = $pythonExited
-              PythonExit = $pythonExit
-              ReportedChromeAlive = $reportedChromeAlive
-              ProfileChromes = $profileChromes
-            }
-          }
-
-          Start-Sleep -Seconds 5
-          $states5 = @()
-          foreach ($session in $sessions) {
-            $states5 += Get-SessionState $session 'after5s'
-          }
-
-          Start-Sleep -Seconds 15
-          $states20 = @()
-          foreach ($session in $sessions) {
-            $states20 += Get-SessionState $session 'after20s'
-          }
-
-          $zombies = @($states20 | Where-Object {
-            $_.ReportedChromeAlive -or $_.ProfileChromes.Count -gt 0
-          })
-          Write-Host "SUMMARY sessions=$sessionCount zombieChromeSessionsAfter20s=$($zombies.Count)"
-          foreach ($state in $states20) {
-            Write-Host "SUMMARY session=$($state.Slot) pythonExited=$($state.PythonExited) pythonExit=$($state.PythonExit) chrome=$($state.ReportedChromeAlive) chromeCount=$($state.ProfileChromes.Count)"
-          }
-
-          # Clean only the isolated test processes after all evidence is collected.
-          foreach ($session in $sessions) {
-            Stop-Process -Id $session.PythonPid -Force -ErrorAction SilentlyContinue
-          }
-          foreach ($state in $states20) {
-            foreach ($proc in $state.ProfileChromes) {
+            foreach ($proc in $profileChromes) {
               Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
             }
           }
 
-          if ($zombies.Count -gt 0) {
-            Write-Error "OOPIF_ZOMBIE_REPRODUCED: $($zombies.Count) of $sessionCount production-entry sessions retained Chrome after 20 seconds."
-            exit 42
+          function Run-Probe([string]$mode, [int]$replica) {
+            $name = "$mode-r$replica"
+            $profile = Join-Path $root "profile-$name"
+            $diag = Join-Path $root "$name.diag.log"
+            New-Item -ItemType Directory -Force -Path $profile | Out-Null
+
+            $parent = Start-Process node -ArgumentList @('layer_parent.js', $mode, $profile, $diag, $name) -PassThru -RedirectStandardOutput "$name.node.stdout.log" -RedirectStandardError "$name.node.stderr.log"
+            $pidFile = "$name.python.pid"
+            $stdoutFile = "$name.python.stdout.log"
+            $deadline = (Get-Date).AddMinutes(3)
+            $ready = $null
+            while ((Get-Date) -lt $deadline) {
+              if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
+                $line = Get-Content $stdoutFile -ErrorAction SilentlyContinue |
+                  Where-Object { $_ -match '^PROBE_READY ' } |
+                  Select-Object -Last 1
+                if ($line) {
+                  $ready = ($line -replace '^PROBE_READY\s+', '') | ConvertFrom-Json
+                  break
+                }
+              }
+              if ($parent.HasExited) { break }
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not $ready) {
+              Write-Host "PROBE $name failed before ready"
+              if (Test-Path $stdoutFile) { Get-Content $stdoutFile }
+              if (Test-Path "$name.python.stderr.log") { Get-Content "$name.python.stderr.log" }
+              throw "$name did not become ready"
+            }
+
+            $pythonPid = [int](Get-Content $pidFile)
+            $pythonProc = Get-Process -Id $pythonPid -ErrorAction Stop
+            $chromePid = [int]$ready.chromePid
+            Write-Host "PROBE_READY name=$name node=$($parent.Id) python=$pythonPid chrome=$chromePid"
+
+            Stop-Process -Id $parent.Id -Force -ErrorAction Stop
+            Start-Sleep -Seconds 3
+            $pythonProc.Refresh()
+            $exited3 = $pythonProc.HasExited
+            $exit3 = 'still-running'
+            if ($exited3) {
+              try { $exit3 = [string]$pythonProc.ExitCode } catch { $exit3 = 'unavailable' }
+            }
+            $chromeAlive3 = $false
+            if ($chromePid -gt 0) {
+              $chromeAlive3 = $null -ne (Get-Process -Id $chromePid -ErrorAction SilentlyContinue)
+            }
+            Write-Host "PROBE_RESULT name=$name after=3s pythonExited=$exited3 pythonExit=$exit3 chromeAlive=$chromeAlive3"
+            if (Test-Path $diag) { Get-Content $diag }
+
+            Start-Sleep -Seconds 5
+            $pythonProc.Refresh()
+            $exited8 = $pythonProc.HasExited
+            $exit8 = 'still-running'
+            if ($exited8) {
+              try { $exit8 = [string]$pythonProc.ExitCode } catch { $exit8 = 'unavailable' }
+            }
+            $profileChromes = @(
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                  $_.CommandLine -and
+                  $_.CommandLine.Contains($profile)
+                }
+            )
+            Write-Host "PROBE_RESULT name=$name after=8s pythonExited=$exited8 pythonExit=$exit8 profileChromeCount=$($profileChromes.Count)"
+            if (Test-Path $diag) { Get-Content $diag }
+
+            $result = [pscustomobject]@{
+              Mode = $mode
+              Replica = $replica
+              PythonExited = $exited8
+              PythonExit = $exit8
+              ChromeCount = $profileChromes.Count
+              Diag = $diag
+              Profile = $profile
+              PythonPid = $pythonPid
+            }
+            Kill-ProbeProcesses $result
+            return $result
           }
 
-          Write-Host "OOPIF_CLEAN_EXIT: all $sessionCount production-entry sessions cleaned up after Node parent death."
+          $modes = @('plain', 'stdin', 'oopif_import', 'adapter_sleep', 'adapter_is_running', 'adapter_poll', 'worker_idle')
+          $results = @()
+          foreach ($mode in $modes) {
+            foreach ($replica in 1..2) {
+              $results += Run-Probe $mode $replica
+            }
+          }
 
-      - name: Upload smoke logs
+          Write-Host '=== LAYER BINARY SEARCH SUMMARY ==='
+          foreach ($mode in $modes) {
+            $subset = @($results | Where-Object { $_.Mode -eq $mode })
+            $exited = @($subset | Where-Object { $_.PythonExited }).Count
+            $chrome = @($subset | Where-Object { $_.ChromeCount -gt 0 }).Count
+            $codes = ($subset | ForEach-Object { $_.PythonExit }) -join ','
+            Write-Host "LAYER mode=$mode exited=$exited/$($subset.Count) chromeZombie=$chrome/$($subset.Count) exitCodes=$codes"
+          }
+
+      - name: Upload layer-search logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-oopif-parent-crash-logs
+          name: windows-parent-death-layer-search-logs
           path: |
-            session-*.python.stdout.log
-            session-*.python.stderr.log
-            session-*.node.stdout.log
-            session-*.node.stderr.log
+            *.python.stdout.log
+            *.python.stderr.log
+            *.node.stdout.log
+            *.node.stderr.log
+            ${{ runner.temp }}/ares-parent-death-layer-search/*.diag.log
           if-no-files-found: ignore
