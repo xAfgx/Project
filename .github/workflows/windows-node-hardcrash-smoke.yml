@@ -1,4 +1,4 @@
-name: Windows Node hard-crash diagnostics
+name: Windows Node hard-crash exit-code diagnostics
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  hardcrash-diagnostics:
+  hardcrash-exitcode:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -29,12 +29,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
 
-      - name: Run five instrumented parent-crash sessions
+      - name: Capture Python exit codes across five sessions
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $sessionCount = 5
-          $root = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-diagnostics'
+          $root = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-exitcode'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
 
           @'
@@ -43,7 +43,6 @@ jobs:
           import os
           import sys
           import time
-          import traceback
           from pathlib import Path
 
           repo = Path(__file__).resolve().parent
@@ -71,21 +70,9 @@ jobs:
               mark("COMMAND_READER_ENTER")
               try:
                   return original_reader(target)
-              except BaseException as exc:
-                  mark("COMMAND_READER_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:300]}")
-                  raise
               finally:
                   mark("STDIN_EOF_READER_EXIT")
           base.command_reader = diagnostic_reader
-
-          original_poll = base.SeleniumBaseCdpAdapter.poll_runtime
-          def diagnostic_poll(self):
-              try:
-                  return original_poll(self)
-              except BaseException as exc:
-                  mark("POLL_RUNTIME_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:300]}")
-                  raise
-          base.SeleniumBaseCdpAdapter.poll_runtime = diagnostic_poll
 
           original_quit = base.SeleniumBaseCdpAdapter.quit
           def diagnostic_quit(self):
@@ -110,16 +97,8 @@ jobs:
           try:
               rc = base.main()
               mark("MAIN_RETURN", str(rc))
-          except BaseException as exc:
-              mark("WRAPPER_EXCEPTION", f"{type(exc).__name__}:{str(exc)[:500]}")
-              try:
-                  mark("WRAPPER_TRACE", traceback.format_exc().replace("\n", " | ")[-1500:])
-              except Exception:
-                  pass
-              raise
           finally:
               mark("WRAPPER_FINALLY")
-
           raise SystemExit(rc)
           '@ | Set-Content -Path diagnostic_worker.py -Encoding UTF8
 
@@ -128,42 +107,36 @@ jobs:
           const fs = require('fs');
           const path = require('path');
 
-          const slot = String(process.argv[2] || '0');
-          const profileDir = String(process.argv[3] || '');
-          const diagFile = String(process.argv[4] || '');
+          const slot = String(process.argv[2]);
+          const profileDir = String(process.argv[3]);
+          const diagFile = String(process.argv[4]);
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
           const prefix = `session-${slot}`;
 
-          const child = spawn(
-            pythonExe,
-            ['-u', 'diagnostic_worker.py'],
-            {
-              stdio: ['pipe', 'pipe', 'pipe'],
-              windowsHide: true,
-              env: {
-                ...process.env,
-                PYTHONUNBUFFERED: '1',
-                ARES_DIAG_SLOT: slot,
-                ARES_DIAG_FILE: diagFile
-              }
+          const child = spawn(pythonExe, ['-u', 'diagnostic_worker.py'], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            windowsHide: true,
+            env: {
+              ...process.env,
+              PYTHONUNBUFFERED: '1',
+              ARES_DIAG_SLOT: slot,
+              ARES_DIAG_FILE: diagFile
             }
-          );
+          });
 
           fs.writeFileSync(`${prefix}.python.pid`, String(child.pid));
           child.stdout.pipe(fs.createWriteStream(`${prefix}.python.stdout.log`, { flags: 'a' }));
           child.stderr.pipe(fs.createWriteStream(`${prefix}.python.stderr.log`, { flags: 'a' }));
-
           child.stdin.write(JSON.stringify({
             type: 'start',
-            requestId: `hardcrash-diagnostic-start-${slot}`,
-            taskId: `hardcrash-diagnostic-task-${slot}`,
+            requestId: `exitcode-start-${slot}`,
+            taskId: `exitcode-task-${slot}`,
             profileDir,
             headless: true,
             browserArgs: []
           }) + '\n');
-
           setInterval(() => {}, 1000);
           '@ | Set-Content -Path crash-parent.js -Encoding UTF8
 
@@ -179,9 +152,9 @@ jobs:
               Diag = $diag
               Parent = $parent
               PythonPid = $null
+              PythonProc = $null
               ChromePid = $null
             }
-            Write-Host "SESSION $i Node=$($parent.Id) profile=$profile"
           }
 
           $deadline = (Get-Date).AddMinutes(5)
@@ -200,15 +173,13 @@ jobs:
                   Select-Object -Last 1
                 if ($readyLine) {
                   $session.PythonPid = [int](Get-Content $pidFile)
+                  $session.PythonProc = Get-Process -Id $session.PythonPid -ErrorAction Stop
                   $jsonText = $readyLine -replace '^ARES_SB_TASK\s*', ''
                   $ready = $jsonText | ConvertFrom-Json
                   $session.ChromePid = [int]$ready.pid
-                  Write-Host "SESSION $($session.Slot) READY python=$($session.PythonPid) chrome=$($session.ChromePid)"
+                  Write-Host "SESSION $($session.Slot) READY node=$($session.Parent.Id) python=$($session.PythonPid) chrome=$($session.ChromePid)"
                   $readyCount++
                 }
-              }
-              if ($session.Parent.HasExited -and -not $session.ChromePid) {
-                throw "SESSION $($session.Slot) Node parent exited before ready."
               }
             }
             if ($readyCount -eq $sessionCount) { break }
@@ -216,29 +187,29 @@ jobs:
           }
 
           $notReady = @($sessions | Where-Object { -not $_.PythonPid -or -not $_.ChromePid })
-          if ($notReady.Count -gt 0) {
-            throw "$($notReady.Count) of $sessionCount workers did not become ready."
-          }
+          if ($notReady.Count -gt 0) { throw "$($notReady.Count) sessions did not become ready." }
 
-          Write-Host "Hard-killing all $sessionCount Node parents..."
+          Write-Host 'Hard-killing Node parents only...'
           foreach ($session in $sessions) {
             Stop-Process -Id $session.Parent.Id -Force -ErrorAction Stop
           }
 
-          Start-Sleep -Seconds 3
-          Write-Host '--- DIAGNOSTICS AFTER 3s ---'
+          Start-Sleep -Seconds 5
+          $zombies = 0
           foreach ($session in $sessions) {
-            $pythonAlive = $null -ne (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)
-            $chromeAlive = $null -ne (Get-Process -Id $session.ChromePid -ErrorAction SilentlyContinue)
-            Write-Host "SESSION $($session.Slot) after3s python=$pythonAlive chrome=$chromeAlive"
-            if (Test-Path $session.Diag) { Get-Content $session.Diag }
-          }
-
-          Start-Sleep -Seconds 17
-          Write-Host '--- DIAGNOSTICS AFTER 20s ---'
-          $zombieSessions = 0
-          foreach ($session in $sessions) {
-            $pythonAlive = $null -ne (Get-Process -Id $session.PythonPid -ErrorAction SilentlyContinue)
+            $session.PythonProc.Refresh()
+            $hasExited = $session.PythonProc.HasExited
+            $exitText = 'still-running'
+            if ($hasExited) {
+              try {
+                $exitCode = [int]$session.PythonProc.ExitCode
+                $unsigned = [BitConverter]::ToUInt32([BitConverter]::GetBytes($exitCode), 0)
+                $hex = ('0x{0:X8}' -f $unsigned)
+                $exitText = "$exitCode/$hex"
+              } catch {
+                $exitText = "unavailable:$($_.Exception.Message)"
+              }
+            }
             $profileChromes = @(
               Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
@@ -247,13 +218,12 @@ jobs:
                   $_.CommandLine.Contains($session.Profile)
                 }
             )
-            if ($profileChromes.Count -gt 0) { $zombieSessions++ }
-            Write-Host "SESSION $($session.Slot) after20s python=$pythonAlive profileChromeCount=$($profileChromes.Count)"
+            if ($profileChromes.Count -gt 0) { $zombies++ }
+            Write-Host "RESULT session=$($session.Slot) pythonExited=$hasExited pythonExit=$exitText chromeCount=$($profileChromes.Count)"
             if (Test-Path $session.Diag) { Get-Content $session.Diag }
           }
-          Write-Host "SUMMARY sessions=$sessionCount zombieSessionsAfter20s=$zombieSessions"
+          Write-Host "SUMMARY sessions=$sessionCount zombieChromeSessions=$zombies"
 
-          # Cleanup only the isolated test processes/profiles after collecting evidence.
           foreach ($session in $sessions) {
             Stop-Process -Id $session.PythonPid -Force -ErrorAction SilentlyContinue
             $profileChromes = @(
@@ -269,8 +239,8 @@ jobs:
             }
           }
 
-          if ($zombieSessions -gt 0) {
-            Write-Error "DIAGNOSTIC_ZOMBIE_REPRODUCED: $zombieSessions of $sessionCount sessions retained profile Chrome after 20 seconds."
+          if ($zombies -gt 0) {
+            Write-Error "EXITCODE_DIAGNOSTIC_REPRODUCED: $zombies of $sessionCount sessions retained Chrome."
             exit 42
           }
 
@@ -278,11 +248,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-node-hardcrash-diagnostic-logs
+          name: windows-node-hardcrash-exitcode-logs
           path: |
             session-*.python.stdout.log
             session-*.python.stderr.log
             session-*.node.stdout.log
             session-*.node.stderr.log
-            ${{ runner.temp }}/ares-hardcrash-diagnostics/session-*.diag.log
+            ${{ runner.temp }}/ares-hardcrash-exitcode/session-*.diag.log
           if-no-files-found: ignore
