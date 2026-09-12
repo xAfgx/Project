@@ -1,0 +1,158 @@
+name: Windows Node hard-crash smoke
+
+on:
+  push:
+    branches:
+      - smoke/windows-node-hardcrash
+  workflow_dispatch:
+
+jobs:
+  hardcrash-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install SeleniumBase runtime
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
+
+      - name: Run real Node to Python to Chrome parent-crash smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $profile = Join-Path $env:RUNNER_TEMP 'ares-hardcrash-profile'
+          New-Item -ItemType Directory -Force -Path $profile | Out-Null
+          $env:ARES_SMOKE_PROFILE = $profile
+
+          @'
+          const { spawn } = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+
+          const pythonExe = process.env.pythonLocation
+            ? path.join(process.env.pythonLocation, 'python.exe')
+            : 'python';
+          const profileDir = process.env.ARES_SMOKE_PROFILE;
+          const child = spawn(
+            pythonExe,
+            ['-u', 'python/seleniumbase_cdp/task_browser_worker.py'],
+            {
+              stdio: ['pipe', 'pipe', 'pipe'],
+              windowsHide: true,
+              env: { ...process.env, PYTHONUNBUFFERED: '1' }
+            }
+          );
+
+          fs.writeFileSync('python.pid', String(child.pid));
+          child.stdout.pipe(fs.createWriteStream('python.stdout.log', { flags: 'a' }));
+          child.stderr.pipe(fs.createWriteStream('python.stderr.log', { flags: 'a' }));
+
+          child.stdin.write(JSON.stringify({
+            type: 'start',
+            requestId: 'hardcrash-smoke-start',
+            taskId: 'hardcrash-smoke-task',
+            profileDir,
+            headless: true,
+            browserArgs: []
+          }) + '\n');
+
+          setInterval(() => {}, 1000);
+          '@ | Set-Content -Path crash-parent.js -Encoding UTF8
+
+          $parent = Start-Process node -ArgumentList 'crash-parent.js' -PassThru -RedirectStandardOutput 'node.stdout.log' -RedirectStandardError 'node.stderr.log'
+          Write-Host "Node parent PID: $($parent.Id)"
+
+          $deadline = (Get-Date).AddMinutes(4)
+          $readyLine = $null
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path 'python.stdout.log') {
+              $readyLine = Get-Content 'python.stdout.log' -ErrorAction SilentlyContinue |
+                Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
+                Select-Object -Last 1
+              if ($readyLine) { break }
+            }
+            if ($parent.HasExited) {
+              throw "Node parent exited before Python worker became ready. node exit=$($parent.ExitCode)"
+            }
+            Start-Sleep -Milliseconds 500
+          }
+
+          if (-not $readyLine) {
+            Write-Host '--- python stdout ---'
+            if (Test-Path 'python.stdout.log') { Get-Content 'python.stdout.log' }
+            Write-Host '--- python stderr ---'
+            if (Test-Path 'python.stderr.log') { Get-Content 'python.stderr.log' }
+            throw 'SeleniumBase worker did not become ready within 4 minutes.'
+          }
+
+          $pythonPid = [int](Get-Content 'python.pid')
+          $jsonText = $readyLine -replace '^ARES_SB_TASK\s*', ''
+          $ready = $jsonText | ConvertFrom-Json
+          $chromePid = [int]$ready.pid
+
+          Write-Host "Python PID: $pythonPid"
+          Write-Host "Chrome PID reported by ARES worker: $chromePid"
+          if (-not (Get-Process -Id $pythonPid -ErrorAction SilentlyContinue)) { throw 'Python worker was not alive before parent crash.' }
+          if (-not (Get-Process -Id $chromePid -ErrorAction SilentlyContinue)) { throw 'Chrome was not alive before parent crash.' }
+
+          Write-Host "Hard-killing only Node parent PID $($parent.Id) ..."
+          Stop-Process -Id $parent.Id -Force
+          Start-Sleep -Seconds 10
+
+          $pythonAlive = $null -ne (Get-Process -Id $pythonPid -ErrorAction SilentlyContinue)
+          $reportedChromeAlive = $null -ne (Get-Process -Id $chromePid -ErrorAction SilentlyContinue)
+          $profileChromes = @(
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                $_.CommandLine -and
+                $_.CommandLine.Contains($profile)
+              }
+          )
+
+          Write-Host "RESULT pythonAliveAfter10s=$pythonAlive"
+          Write-Host "RESULT reportedChromeAliveAfter10s=$reportedChromeAlive"
+          Write-Host "RESULT profileChromeCountAfter10s=$($profileChromes.Count)"
+          foreach ($proc in $profileChromes) {
+            Write-Host "Remaining profile Chrome PID=$($proc.ProcessId) PPID=$($proc.ParentProcessId)"
+          }
+
+          # Always clean up the isolated test processes before reporting failure.
+          if ($pythonAlive) {
+            Stop-Process -Id $pythonPid -Force -ErrorAction SilentlyContinue
+          }
+          foreach ($proc in $profileChromes) {
+            Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+          }
+
+          if ($pythonAlive -or $reportedChromeAlive -or $profileChromes.Count -gt 0) {
+            Write-Error 'ZOMBIE_REPRODUCED: Python and/or Chrome survived the hard death of the Node parent.'
+            exit 42
+          }
+
+          Write-Host 'CLEAN_EXIT: Python and Chrome both disappeared after Node parent death.'
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-node-hardcrash-smoke-logs
+          path: |
+            python.stdout.log
+            python.stderr.log
+            node.stdout.log
+            node.stderr.log
+          if-no-files-found: ignore
