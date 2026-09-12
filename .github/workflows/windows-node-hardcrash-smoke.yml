@@ -1,4 +1,4 @@
-name: Windows Node child survival matrix
+name: Windows detached OOPIF EOF cleanup proof
 
 on:
   push:
@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  spawn-semantics:
+  detached-eof-proof:
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,26 +24,68 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Test Node child survival by detached and stdio mode
+      - name: Install SeleniumBase runtime
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
+
+      - name: Compare current EOF behavior with EOF close sentinel
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'ares-node-child-semantics'
+          $root = Join-Path $env:RUNNER_TEMP 'ares-detached-oopif-eof-proof'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
 
+          # Runtime-only wrapper. It does not edit any tracked Python source.
           @'
-          import os
+          from __future__ import annotations
           import sys
-          import time
           from pathlib import Path
 
-          ready = Path(sys.argv[1])
-          heartbeat = Path(sys.argv[2])
-          ready.write_text(str(os.getpid()), encoding='utf-8')
-          while True:
-              heartbeat.write_text(f"{os.getpid()} {time.time():.6f}", encoding='utf-8')
-              time.sleep(0.25)
-          '@ | Set-Content -Path plain_survivor.py -Encoding UTF8
+          module_dir = Path.cwd() / 'python' / 'seleniumbase_cdp'
+          sys.path.insert(0, str(module_dir))
+          import task_browser_worker_oopif as oopif
+
+          base = oopif.impl.base
+          original_reader = base.command_reader
+
+          def eof_closing_reader(target):
+              try:
+                  return original_reader(target)
+              finally:
+                  # Internal-only command: parent control pipe disappeared.
+                  # Do not emit a reply because stdout vanished with the parent.
+                  target.put({"type": "__parent_eof__", "requestId": ""})
+
+          original_run = base.run
+
+          def eof_aware_run(start):
+              if str(start.get("type") or "") != "start":
+                  raise ValueError("First command must be type='start'")
+
+              # Reuse the production run function, but temporarily translate the
+              # internal EOF marker into the already-supported close command.
+              # This monkeypatch is isolated to this smoke runner only.
+              old_reader = base.command_reader
+
+              def translated_reader(target):
+                  class QueueProxy:
+                      def put(self, value):
+                          if isinstance(value, dict) and value.get("type") == "__parent_eof__":
+                              target.put({"type": "close", "requestId": "parent-eof-smoke"})
+                          else:
+                              target.put(value)
+                  return eof_closing_reader(QueueProxy())
+
+              base.command_reader = translated_reader
+              try:
+                  return original_run(start)
+              finally:
+                  base.command_reader = old_reader
+
+          base.run = eof_aware_run
+          raise SystemExit(oopif.main())
+          '@ | Set-Content -Path oopif_eof_wrapper.py -Encoding UTF8
 
           @'
           const { spawn } = require('child_process');
@@ -51,89 +93,126 @@ jobs:
           const path = require('path');
 
           const mode = String(process.argv[2]);
-          const ready = String(process.argv[3]);
-          const heartbeat = String(process.argv[4]);
-          const childPidFile = String(process.argv[5]);
+          const slot = String(process.argv[3]);
+          const profileDir = String(process.argv[4]);
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
+          const script = mode === 'fixed'
+            ? 'oopif_eof_wrapper.py'
+            : 'python/seleniumbase_cdp/task_browser_worker_oopif.py';
+          const prefix = `${mode}-${slot}`;
 
-          const detached = mode.includes('detached');
-          const ignored = mode.includes('ignored');
-          const options = {
-            detached,
+          const child = spawn(pythonExe, ['-u', script], {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            detached: true,
             windowsHide: true,
-            stdio: ignored ? 'ignore' : ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, PYTHONUNBUFFERED: '1' }
-          };
-          const child = spawn(pythonExe, ['-u', 'plain_survivor.py', ready, heartbeat], options);
-          fs.writeFileSync(childPidFile, String(child.pid));
-          if (!ignored) {
-            child.stdout.resume();
-            child.stderr.resume();
-          }
-          if (mode.includes('unref')) child.unref();
+          });
+
+          fs.writeFileSync(`${prefix}.python.pid`, String(child.pid));
+          child.stdout.pipe(fs.createWriteStream(`${prefix}.python.stdout.log`, { flags: 'a' }));
+          child.stderr.pipe(fs.createWriteStream(`${prefix}.python.stderr.log`, { flags: 'a' }));
+          child.stdin.write(JSON.stringify({
+            type: 'start',
+            requestId: `${mode}-start-${slot}`,
+            taskId: `${mode}-task-${slot}`,
+            profileDir,
+            headless: true,
+            browserArgs: []
+          }) + '\n');
           setInterval(() => {}, 1000);
-          '@ | Set-Content -Path spawn_parent.js -Encoding UTF8
+          '@ | Set-Content -Path detached_parent.js -Encoding UTF8
 
-          function Wait-Ready([string]$readyFile, [string]$pidFile) {
-            $deadline = (Get-Date).AddSeconds(20)
+          function Run-Case([string]$mode, [int]$slot) {
+            $prefix = "$mode-$slot"
+            $profile = Join-Path $root "profile-$prefix"
+            New-Item -ItemType Directory -Force -Path $profile | Out-Null
+            $parent = Start-Process node -ArgumentList @('detached_parent.js',$mode,"$slot",$profile) -PassThru
+            $pidFile = "$prefix.python.pid"
+            $stdoutFile = "$prefix.python.stdout.log"
+            $stderrFile = "$prefix.python.stderr.log"
+
+            $deadline = (Get-Date).AddMinutes(3)
+            $ready = $null
             while ((Get-Date) -lt $deadline) {
-              if ((Test-Path $readyFile) -and (Test-Path $pidFile)) { return }
-              Start-Sleep -Milliseconds 100
+              if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
+                $line = Get-Content $stdoutFile -ErrorAction SilentlyContinue |
+                  Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
+                  Select-Object -Last 1
+                if ($line) {
+                  $ready = (($line -replace '^ARES_SB_TASK\s*','') | ConvertFrom-Json)
+                  break
+                }
+              }
+              Start-Sleep -Milliseconds 250
             }
-            throw "child did not become ready: $readyFile"
-          }
+            if (-not $ready) {
+              if (Test-Path $stderrFile) { Get-Content $stderrFile }
+              throw "$prefix did not become ready"
+            }
 
-          function Run-NodeCase([string]$mode) {
-            $ready = Join-Path $root "$mode.ready"
-            $heartbeat = Join-Path $root "$mode.heartbeat"
-            $pidFile = Join-Path $root "$mode.pid"
-            $parent = Start-Process node -ArgumentList @('spawn_parent.js', $mode, $ready, $heartbeat, $pidFile) -PassThru
-            Wait-Ready $ready $pidFile
-            $childPid = [int](Get-Content $pidFile)
-            $childProc = Get-Process -Id $childPid -ErrorAction Stop
-            $cimBefore = Get-CimInstance Win32_Process -Filter "ProcessId=$childPid"
-            Write-Host "CASE_READY mode=$mode node=$($parent.Id) child=$childPid childPPID=$($cimBefore.ParentProcessId)"
+            $pythonPid = [int](Get-Content $pidFile)
+            $pythonProc = Get-Process -Id $pythonPid -ErrorAction Stop
+            $chromePid = [int]$ready.pid
+            Write-Host "CASE_READY mode=$mode slot=$slot node=$($parent.Id) python=$pythonPid chrome=$chromePid"
+
             Stop-Process -Id $parent.Id -Force -ErrorAction Stop
-            Start-Sleep -Seconds 3
-            $childProc.Refresh()
-            $alive = -not $childProc.HasExited
-            $hbExists = Test-Path $heartbeat
-            $hb = if ($hbExists) { Get-Content $heartbeat } else { '' }
-            Write-Host "CASE_RESULT mode=$mode aliveAfter3s=$alive heartbeat=$hb"
-            if ($alive) { Stop-Process -Id $childPid -Force -ErrorAction SilentlyContinue }
-            return [pscustomobject]@{ Mode=$mode; Alive=$alive }
+            Start-Sleep -Seconds 5
+            $pythonProc.Refresh()
+            $pythonAlive5 = -not $pythonProc.HasExited
+            $profileChromes5 = @(
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                  $_.CommandLine -and $_.CommandLine.Contains($profile)
+                }
+            )
+            Write-Host "CASE_RESULT mode=$mode slot=$slot after=5s pythonAlive=$pythonAlive5 chromeCount=$($profileChromes5.Count)"
+
+            Start-Sleep -Seconds 10
+            $pythonProc.Refresh()
+            $pythonAlive15 = -not $pythonProc.HasExited
+            $exitCode = 'still-running'
+            if (-not $pythonAlive15) {
+              try { $exitCode = [string]$pythonProc.ExitCode } catch { $exitCode = 'unavailable' }
+            }
+            $profileChromes15 = @(
+              Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.Name -match '^(chrome|chromium).*\.exe$' -and
+                  $_.CommandLine -and $_.CommandLine.Contains($profile)
+                }
+            )
+            Write-Host "CASE_RESULT mode=$mode slot=$slot after=15s pythonAlive=$pythonAlive15 pythonExit=$exitCode chromeCount=$($profileChromes15.Count)"
+            if (Test-Path $stderrFile) {
+              $stderrTail = @(Get-Content $stderrFile -ErrorAction SilentlyContinue | Select-Object -Last 30)
+              if ($stderrTail.Count -gt 0) {
+                Write-Host "--- STDERR $prefix ---"
+                $stderrTail
+              }
+            }
+
+            Stop-Process -Id $pythonPid -Force -ErrorAction SilentlyContinue
+            foreach ($proc in $profileChromes15) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue }
+
+            return [pscustomobject]@{
+              Mode=$mode
+              Slot=$slot
+              PythonAlive=$pythonAlive15
+              ChromeCount=$profileChromes15.Count
+              Exit=$exitCode
+            }
           }
 
-          # Control: Python is started directly by PowerShell, not by Node.
-          $controlReady = Join-Path $root 'control.ready'
-          $controlHeartbeat = Join-Path $root 'control.heartbeat'
-          $control = Start-Process python -ArgumentList @('-u','plain_survivor.py',$controlReady,$controlHeartbeat) -PassThru
-          $dummyNode = Start-Process node -ArgumentList @('-e','setInterval(()=>{},1000)') -PassThru
-          $deadline = (Get-Date).AddSeconds(20)
-          while ((Get-Date) -lt $deadline -and -not (Test-Path $controlReady)) { Start-Sleep -Milliseconds 100 }
-          if (-not (Test-Path $controlReady)) { throw 'control Python did not start' }
-          Write-Host "CONTROL_READY python=$($control.Id) dummyNode=$($dummyNode.Id)"
-          Stop-Process -Id $dummyNode.Id -Force -ErrorAction Stop
-          Start-Sleep -Seconds 3
-          $control.Refresh()
-          $controlAlive = -not $control.HasExited
-          Write-Host "CONTROL_RESULT directPythonAliveAfterUnrelatedNodeKill=$controlAlive"
-          if ($controlAlive) { Stop-Process -Id $control.Id -Force -ErrorAction SilentlyContinue }
-
-          $modes = @(
-            'attached-pipes',
-            'attached-ignored',
-            'detached-pipes',
-            'detached-ignored',
-            'detached-ignored-unref'
-          )
           $results = @()
-          foreach ($mode in $modes) { $results += Run-NodeCase $mode }
+          foreach ($slot in 1..2) { $results += Run-Case 'current' $slot }
+          foreach ($slot in 1..2) { $results += Run-Case 'fixed' $slot }
 
-          Write-Host '=== SPAWN SEMANTICS SUMMARY ==='
-          Write-Host "CONTROL directPythonAlive=$controlAlive"
-          foreach ($result in $results) {
-            Write-Host "SPAWN mode=$($result.Mode) aliveAfterNodeKill=$($result.Alive)"
+          Write-Host '=== DETACHED EOF PROOF SUMMARY ==='
+          foreach ($mode in @('current','fixed')) {
+            $subset = @($results | Where-Object { $_.Mode -eq $mode })
+            $alive = @($subset | Where-Object { $_.PythonAlive }).Count
+            $zombie = @($subset | Where-Object { $_.ChromeCount -gt 0 }).Count
+            Write-Host "EOF_PROOF mode=$mode pythonAlive=$alive/$($subset.Count) chromeZombie=$zombie/$($subset.Count)"
           }
