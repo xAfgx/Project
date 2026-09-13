@@ -7,11 +7,13 @@ import { MonitorRuntimePreloadComponent } from "./monitor-runtime-preload/monito
 import { ProfilePaymentComponent } from "./profile-payment/profile-payment.component";
 import { ProfileCookieSnapshotsComponent } from "./profile-cookie-snapshots/profile-cookie-snapshots.component";
 import { RuntimeControlComponent } from "./runtime-control/runtime-control.component";
+import { RuntimeDebugConsoleComponent } from "./runtime-debug-console/runtime-debug-console.component";
 
 @NgModule({
   declarations: [
     AppComponent,
     RuntimeControlComponent,
+    RuntimeDebugConsoleComponent,
     DropSetupsComponent,
     MonitorRuntimePreloadComponent,
     ProfilePaymentComponent,
@@ -19,6 +21,6 @@ import { RuntimeControlComponent } from "./runtime-control/runtime-control.compo
   ],
   imports: [BrowserModule, FormsModule],
   providers: [],
-  bootstrap: [AppComponent]
+  bootstrap: [AppComponent, RuntimeDebugConsoleComponent]
 })
 export class AppModule {}
