@@ -335,11 +335,29 @@ export class SemanticFieldAutofill {
       return true;
     }
 
+    // Selects frequently store numeric ids (country DE -> value 69) or a
+    // localized label. Resolve the option once by value, visible text or
+    // localized region name, so a correct preselection is recognised instead of
+    // being overwritten by a doomed write, and a wrong one is written through
+    // the option's own value.
+    const option = await this.resolveSelectOption(locator, desired);
+    if (option.alreadySelected) {
+      this.completedTargets.set(key, locator);
+      this.trace?.record({
+        target,
+        ...resolution,
+        valueAvailable: true,
+        action: "completion-check",
+        result: "already-complete"
+      });
+      return true;
+    }
+    const desiredValue = option.matched && option.value ? option.value : desired;
+
     try {
-      // Selects fail fast: when the option value/format does not exist (e.g. a
-      // numeric country list vs. an ISO code) there is no point retrying for
-      // seconds. This removes the long pause between ZIP and phone.
-      await this.interactions.select(locator, desired, {
+      // Selects fail fast: when the option value/format does not exist there is
+      // no point retrying for seconds.
+      await this.interactions.select(locator, desiredValue, {
         attempts: 1,
         verifyTimeoutMs: 500,
         seed: `semantic-select:${key}`
@@ -357,7 +375,8 @@ export class SemanticFieldAutofill {
     this.bumpWriteCount(target);
 
     const after = await this.readValue(locator);
-    if (normalizeValue(after).toUpperCase() !== desired.toUpperCase()) {
+    const normalizedAfter = normalizeValue(after).toUpperCase();
+    if (normalizedAfter !== desiredValue.toUpperCase() && normalizedAfter !== desired.toUpperCase()) {
       this.trace?.record({
         target,
         ...resolution,
@@ -377,6 +396,47 @@ export class SemanticFieldAutofill {
       result: kind === "fallback" ? "fallback-filled" : "filled"
     });
     return true;
+  }
+
+  private async resolveSelectOption(
+    locator: Locator,
+    desired: string
+  ): Promise<{ matched: boolean; alreadySelected: boolean; value: string }> {
+    const resolved = await locator.evaluate((element, args) => {
+      const select = element as HTMLSelectElement;
+      const code = String(args.code || "").trim().toUpperCase();
+      let localized = "";
+      try {
+        const ctor = (Intl as unknown as {
+          DisplayNames?: new (locales: string[], options: { type: string }) => { of(value: string): string | undefined };
+        }).DisplayNames;
+        const locale = document.documentElement.lang || "en";
+        if (ctor) localized = String(new ctor([locale, "en"], { type: "region" }).of(code) || "");
+      } catch {
+        localized = "";
+      }
+      const wanted = new Set<string>();
+      if (code) wanted.add(code);
+      if (localized.trim()) wanted.add(localized.trim().toUpperCase());
+      const items = Array.from(select.options || []).map(option => ({
+        value: String(option.value ?? ""),
+        text: String(option.textContent ?? "").trim(),
+        selected: option.selected === true
+      }));
+      const matches = (item: { value: string; text: string }): boolean =>
+        wanted.has(item.value.trim().toUpperCase()) || wanted.has(item.text.toUpperCase());
+      const selected = items.find(item => item.selected && matches(item));
+      if (selected) return { matched: true, alreadySelected: true, value: selected.value };
+      const candidate = items.find(item => matches(item));
+      if (candidate) return { matched: true, alreadySelected: false, value: candidate.value };
+      return { matched: false, alreadySelected: false, value: "" };
+    }, { code: desired }).catch(() => ({ matched: false, alreadySelected: false, value: "" }));
+    const record = resolved && typeof resolved === "object" ? resolved as Record<string, unknown> : {};
+    return {
+      matched: record["matched"] === true,
+      alreadySelected: record["alreadySelected"] === true,
+      value: String(record["value"] ?? "")
+    };
   }
 
   async isComplete(target: SemanticTarget, value: string): Promise<boolean> {

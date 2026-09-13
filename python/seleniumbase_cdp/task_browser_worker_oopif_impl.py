@@ -776,10 +776,10 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 nth = int(locator.get("nth")) if isinstance(locator.get("nth"), (int, float)) else -1
                 text_spec = base.pattern_payload(locator.get("hasText"))
                 node_id, session_id = self._resolve_native_node(locator, selector, nth, text_spec)
-                # Native engine scroll only. The custom momentum scroll fought
-                # the checkout's own focus handler and produced visible jumps;
-                # the native path is what Playwright/Puppeteer use and is the
-                # most reliable option.
+                # Native engine scroll (same as Playwright/Puppeteer). The custom
+                # wheel scroll is disabled: CDP frame geometry for nested payment
+                # iframes needs the frame's internal scroll subtracted, and
+                # without that the wheel overshoots the field.
                 self._oopif_registry.call(
                     "DOM.scrollIntoViewIfNeeded",
                     {"nodeId": node_id},
@@ -1045,10 +1045,12 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 )
                 if not below and not above:
                     return True
-                # Center the field in the viewport. DOM.focus does not move an
-                # element that is already fully visible, so a centered target
-                # removes the follow-up focus jump entirely.
-                scroll_amount = ((top + bottom) / 2.0) - (height / 2.0)
+                # Minimal correction only: scroll just enough to bring the field
+                # inside the viewport. Centering required a large scroll whose
+                # frame-offset math could overshoot (and looked like scrolling
+                # past the field), so the small re-measured correction is used
+                # everywhere.
+                scroll_amount = (bottom - (height - margin)) if below else (top - margin)
                 # Fields already essentially centered are left alone; the tiny
                 # correction is not worth a visible scroll.
                 if abs(scroll_amount) < 40:

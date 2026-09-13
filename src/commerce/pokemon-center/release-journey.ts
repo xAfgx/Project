@@ -169,19 +169,47 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
 
 
 
+  private async waitForCart(page: Page, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const marker = page.locator("#guest-checkout, [data-ge-checkout-button]").first();
+      if (await marker.isVisible().catch(() => false)) return true;
+      await page.waitForTimeout(250).catch(() => undefined);
+    } while (Date.now() < deadline);
+    return false;
+  }
+
   async addToCart(page: Page, shop: CommerceShop, _product: ProductObservation): Promise<void> {
     const add = page.locator("button").filter({ hasText: "In den Einkaufswagen" }).first();
     if (!(await add.isVisible().catch(() => false)) || !(await add.isEnabled().catch(() => false))) {
       throw new Error("Pokémon-Center-Produkt ist nicht mehr in den Einkaufswagen legbar.");
     }
     await new GhostCursorUiInteractionHelper(page).click(add);
-    await page.waitForTimeout(350);
-    const cartUrl = new URL("/de-de/cart", shop.baseUrl).toString();
-    await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    // Follow the shop's own cart transition; only fall back to the known cart
+    // URL when the click produced no navigation at all.
+    if (await this.waitForCart(page, 10_000)) {
+      process.stderr.write(`[JOURNEY] addToCart natural url=${page.url()}\n`);
+    } else {
+      const cartUrl = new URL("/de-de/cart", shop.baseUrl).toString();
+      process.stderr.write(`[JOURNEY] addToCart cart-fallback url=${page.url()}\n`);
+      await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    }
     const guest = page.locator("#guest-checkout").first();
     if (!(await guest.isVisible().catch(() => false))) {
       throw new Error("Pokémon-Center-Warenkorb enthält keinen sichtbaren Gast-Checkout.");
     }
+  }
+
+  private async waitForCheckout(page: Page, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const title = await page.title().catch(() => "");
+      if (/(checkout|global-e|international)/i.test(title)) return true;
+      const marker = page.locator("#geCheckoutFrm, #BillingCountryID");
+      if (await marker.count().catch(() => 0) > 0) return true;
+      await page.waitForTimeout(250).catch(() => undefined);
+    } while (Date.now() < deadline);
+    return false;
   }
 
   async openCheckout(page: Page, shop: CommerceShop): Promise<void> {
@@ -193,12 +221,15 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       throw new Error("Pokémon-Center-Gast-Checkout ist nicht verfügbar.");
     }
     await new GhostCursorUiInteractionHelper(page).click(guest);
-    await page.waitForTimeout(250).catch(() => undefined);
-    // The offline harness' click interception rewrites the checkout button to
-    // a relative "checkout.html" that the local server does not serve. Navigate
-    // explicitly to the real checkout path so the flow lands on the checkout.
-    const checkoutUrl = new URL("/de-de/intl-checkout", shop.baseUrl).toString();
-    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => undefined);
+    // Follow the shop's own (session-bound) checkout redirect; only fall back
+    // to the known checkout URL when the click produced no navigation.
+    if (await this.waitForCheckout(page, 20_000)) {
+      process.stderr.write(`[JOURNEY] openCheckout natural url=${page.url()}\n`);
+    } else {
+      const checkoutUrl = new URL("/de-de/intl-checkout", shop.baseUrl).toString();
+      process.stderr.write(`[JOURNEY] openCheckout checkout-fallback url=${page.url()}\n`);
+      await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => undefined);
+    }
     await page.waitForLoadState("domcontentloaded", { timeout: 8_000 }).catch(() => undefined);
     const title = await page.title().catch(() => "");
     const current = page.url();

@@ -145,8 +145,18 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
       await (page as unknown as { reinstallStealthSpoof?: () => Promise<boolean> })
         .reinstallStealthSpoof?.()
         .catch(() => false);
+      // If the queue's own post-release redirect already landed on the
+      // storefront, do not navigate again: a second load is a visible refresh
+      // and re-enters the site unnecessarily. The title is read live, so a
+      // stale cached URL cannot trick this check.
+      const alreadyOnStorefront = queueAlreadyReleased && await this.waitForStorefront(page, 8_000);
       try {
-        await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        if (alreadyOnStorefront) {
+          process.stderr.write(`[JOURNEY] child-entry skip-navigation url=${page.url()}\n`);
+          await page.waitForLoadState("domcontentloaded", { timeout: 8_000 }).catch(() => undefined);
+        } else {
+          await page.goto(entryUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+        }
         // Let the storefront start page actually render/be visible before the
         // discovery lane navigates on to the new-releases category.
         if (queueAlreadyReleased) await page.waitForTimeout(400).catch(() => undefined);
@@ -464,6 +474,16 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
   private flowStage(task: Task): string {
     const flow = task.config.data?.["earlyGateFlow"] as Record<string, unknown> | undefined;
     return String(flow?.["stage"] ?? "");
+  }
+
+  private async waitForStorefront(page: Page, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const title = await page.title().catch(() => "");
+      if (title && !/(warteschlange|queue|sicherheitspr|security|challenge|captcha)/i.test(title)) return true;
+      await page.waitForTimeout(300).catch(() => undefined);
+    } while (Date.now() < deadline);
+    return false;
   }
 
   private emit(task: Task): void {
