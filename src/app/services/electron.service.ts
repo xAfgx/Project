@@ -217,6 +217,16 @@ export class ElectronService {
     });
   }
 
+  warmupMediamarkt(profileId?: string): Promise<any> {
+    if (this.api) return this.api.warmupMediamarkt(profileId);
+    return Promise.resolve({ success: false, error: "Im Browser-Preview nicht verfügbar." });
+  }
+
+  mmSessionCookies(): Promise<any> {
+    if (this.api) return this.api.mmSessionCookies();
+    return Promise.resolve({ success: false, cookies: [], error: "Im Browser-Preview nicht verfügbar." });
+  }
+
   registerShop(config: unknown): Promise<any> {
     if (this.api) return this.api.registerShop(config);
     const shop = config as { id?: string; name?: string; baseUrl?: string; platform?: string };
@@ -442,6 +452,16 @@ export class ElectronService {
       return () => {
         if (typeof unsub === "function") unsub();
         else this.api?.removeProductMonitorListener?.(callback);
+      };
+    }
+    return () => undefined;
+  }
+
+  onLiveLog(callback: (payload: unknown) => void): () => void {
+    if (this.api?.onLiveLog) {
+      const unsub = this.api.onLiveLog(callback);
+      return () => {
+        if (typeof unsub === "function") unsub();
       };
     }
     return () => undefined;

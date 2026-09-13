@@ -146,6 +146,35 @@ export class MediaMarktReleaseJourney implements ReleaseJourney {
     };
   }
 
+  /**
+   * Opens a product URL directly (auto-checkout child). The monitor already
+   * matched the product, so the search step is skipped entirely.
+   */
+  async openProductUrl(page: Page, shop: CommerceShop, url: string, title?: string): Promise<ProductObservation | undefined> {
+    this.log(`open product url ${url}`);
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    } catch {
+      process.stderr.write("[JOURNEY] mediamarkt product url goto failed\n");
+      return undefined;
+    }
+    await page.waitForLoadState("load", { timeout: 15_000 }).catch(() => undefined);
+    if (!await this.waitForAddToCart(page, 15_000)) {
+      process.stderr.write("[JOURNEY] mediamarkt product url add-to-cart not ready\n");
+      return undefined;
+    }
+    const resolvedTitle = String(title ?? "").trim() || await page.title().catch(() => "");
+    return {
+      shopId: shop.id,
+      platform: shop.platform,
+      title: resolvedTitle,
+      url,
+      available: true,
+      observedAt: new Date(),
+      attributes: { source: "mediamarkt-direct-url" }
+    };
+  }
+
   async addToCart(page: Page, _shop: CommerceShop, _product: ProductObservation): Promise<void> {
     // The PDP renders late; wait briefly for the document, then find the box.
     await page.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => undefined);

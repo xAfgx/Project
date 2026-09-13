@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 
 const taskStatusListeners = new Map<Function, (_event: Electron.IpcRendererEvent, payload: unknown) => void>();
 const monitorListeners = new Map<Function, (_event: Electron.IpcRendererEvent, payload: unknown) => void>();
+const liveLogListeners = new Map<Function, (_event: Electron.IpcRendererEvent, payload: unknown) => void>();
 
 const api = {
   getProfiles: () => ipcRenderer.invoke("get-profiles"),
@@ -50,6 +51,8 @@ const api = {
   revealAccount: (accountId: string) => ipcRenderer.invoke("reveal-account", accountId),
   deleteAccount: (accountId: string) => ipcRenderer.invoke("delete-account", accountId),
   getShops: () => ipcRenderer.invoke("get-shops"),
+  warmupMediamarkt: (profileId?: string) => ipcRenderer.invoke("warmup-mediamarkt", profileId),
+  mmSessionCookies: () => ipcRenderer.invoke("mm-session-cookies"),
   registerShop: (config: unknown) => ipcRenderer.invoke("register-shop", config),
   createTask: (config: unknown) => ipcRenderer.invoke("create-task", config),
   setPaymentSession: (taskId: string, payment: unknown) => ipcRenderer.invoke("set-payment-session", taskId, payment),
@@ -91,6 +94,15 @@ const api = {
     return () => {
       ipcRenderer.removeListener("product-monitor-update", listener);
       monitorListeners.delete(callback);
+    };
+  },
+  onLiveLog: (callback: (payload: unknown) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
+    liveLogListeners.set(callback, listener);
+    ipcRenderer.on("live-log", listener);
+    return () => {
+      ipcRenderer.removeListener("live-log", listener);
+      liveLogListeners.delete(callback);
     };
   },
   removeTaskStatusListener: (callback?: (task: unknown) => void) => {

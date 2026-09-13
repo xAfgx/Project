@@ -19,8 +19,8 @@ type AppTab = "dashboard" | "modules" | "tasks" | "monitor" | "profiles" | "prox
 type ProfileTab = "identity" | "address" | "browser" | "payment";
 type TaskCreationMode = "monitor-only" | "auto-checkout";
 type MonitorStrategyMode = "product-monitor" | "early-gate";
-type ModuleModeId = "monitor" | "direct" | "early-gate";
-type SettingsSection = "general" | "appearance" | "runtime" | "browser" | "monitor" | "providers" | "mail" | "accounts" | "diagnostics" | "about";
+type ModuleModeId = "monitor" | "direct" | "monitor-auto" | "early-gate";
+type SettingsSection = "general" | "appearance" | "runtime" | "browser" | "monitor" | "providers" | "mail" | "mediamarkt" | "diagnostics" | "about";
 type ProfileView = ProfileV2Draft;
 type FlowStepKey = "monitoring" | "gate-detected" | "waiting-queue" | "released" | "post-queue-discovery" | "product-found" | "cart" | "checkout";
 type CaptchaProviderCapability = "token" | "classify";
@@ -185,6 +185,11 @@ export class AppComponent implements OnInit, OnDestroy {
   mailboxEncryptionAvailable = false;
   mailboxTestResult = "";
   mailboxBusy = false;
+  warmupResult = "";
+  warmupBusy = false;
+  warmupCookies: Array<{ name: string; value: string; domain: string; path: string }> = [];
+  sessionCookies: Array<{ name: string; value: string; domain: string; path: string }> = [];
+  sessionCookiesResult = "";
   accounts: AccountView[] = [];
   newAccount = { shopId: "mediamarkt", email: "", password: "", label: "" };
   accountEncryptionAvailable = false;
@@ -202,6 +207,8 @@ export class AppComponent implements OnInit, OnDestroy {
   tasks: TaskView[] = [];
   taskLogs: Record<string, TaskLogView[]> = {};
   expandedTaskLogId = "";
+  liveLogs: Array<{ at: number; line: string }> = [];
+  showLiveConsole = false;
   system: SystemStatus = {
     availableWorkers: 0,
     shopCount: 0,
@@ -261,6 +268,7 @@ export class AppComponent implements OnInit, OnDestroy {
       directLane: true,
       modes: [
         { id: "monitor", label: "Nur Monitoring", hint: "MediaMarkt-Produkte überwachen und Signale sammeln, ohne Checkout zu starten." },
+        { id: "monitor-auto", label: "Monitor + Auto-Checkout", hint: "API-Monitor (kein Browser, ~1 Request/Intervall). Bei Treffer (Keyword + Max-Preis + verfügbar) startet der Checkout direkt mit der Produkt-URL." },
         { id: "direct", label: "Direkt zum Checkout", hint: "Ein Browser: Suche → Produkt → Warenkorb → Gast-Checkout. Muss Popups (Cookies, Zwischenschritte) generisch wegstecken." }
       ]
     }
@@ -314,6 +322,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { key: "checkout", label: "CHECKOUT" }
   ];
   taskIntervalSeconds = 30;
+  taskMaxPrice: number | null = null;
   headless = false;
   taskProxyMode: ProxySelection["mode"] = "profile-default";
   selectedTaskProxyId = "";
@@ -351,6 +360,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { id: "monitor", label: "Monitor & Network", note: "Pipeline status" },
     { id: "providers", label: "Providers", note: "Captcha overview" },
     { id: "mail", label: "E-Mail / IMAP", note: "Confirmation mails" },
+    { id: "mediamarkt", label: "MediaMarkt", note: "Cookies & API session" },
     { id: "diagnostics", label: "Diagnostics", note: "Snapshot export" },
     { id: "about", label: "About", note: "Build facts" }
   ];
@@ -367,6 +377,7 @@ export class AppComponent implements OnInit, OnDestroy {
   info = "";
 
   private unsubscribeStatus?: () => void;
+  private unsubscribeLiveLog?: () => void;
   private taskUpdateTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
@@ -408,11 +419,34 @@ export class AppComponent implements OnInit, OnDestroy {
     this.unsubscribeStatus = this.electron.onTaskStatusUpdate(() => {
       this.scheduleTaskViewRefresh();
     });
+    this.unsubscribeLiveLog = this.electron.onLiveLog((payload: unknown) => {
+      const entry = payload as { at?: number; line?: string } | undefined;
+      const line = String(entry?.line ?? "").trim();
+      if (!line) return;
+      this.liveLogs = [...this.liveLogs.slice(-499), { at: Number(entry?.at ?? Date.now()), line }];
+    });
   }
 
   ngOnDestroy(): void {
     this.unsubscribeStatus?.();
+    this.unsubscribeLiveLog?.();
     if (this.taskUpdateTimer) clearTimeout(this.taskUpdateTimer);
+  }
+
+  toggleLiveConsole(): void {
+    this.showLiveConsole = !this.showLiveConsole;
+  }
+
+  clearLiveConsole(): void {
+    this.liveLogs = [];
+  }
+
+  liveLogTime(at: number): string {
+    try {
+      return new Date(at).toLocaleTimeString("de-DE", { hour12: false });
+    } catch {
+      return "";
+    }
   }
 
   private scheduleTaskViewRefresh(): void {
@@ -838,6 +872,13 @@ export class AppComponent implements OnInit, OnDestroy {
     }
     if (mode === "early-gate") {
       this.setMonitorStrategy("early-gate");
+      return;
+    }
+    if (mode === "monitor-auto") {
+      // API monitor only; on a match the auto-checkout child starts directly
+      // with the product URL. No direct lane, no browser while monitoring.
+      this.setMonitorStrategy("product-monitor");
+      this.taskMode = "auto-checkout";
       return;
     }
     this.setMonitorStrategy("product-monitor");
@@ -1470,6 +1511,38 @@ export class AppComponent implements OnInit, OnDestroy {
 
   trackMailbox(_index: number, mailbox: MailboxView): string { return mailbox.id; }
 
+  /** Manual MediaMarkt warm-up test: opens the profile browser and harvests cookies. */
+  async warmupMediamarkt(): Promise<void> {
+    this.error = "";
+    this.warmupResult = "";
+    this.warmupCookies = [];
+    this.warmupBusy = true;
+    try {
+      const result = await this.electron.warmupMediamarkt(this.selectedProfileId || undefined);
+      if (result.success) {
+        this.warmupResult = this.i18n.t("Cookies: {count} · Jar: {path}", { count: result.cookies, path: result.jarPath });
+        this.warmupCookies = Array.isArray(result.list) ? result.list : [];
+      } else {
+        this.error = result.error || this.i18n.t("Warm-Up fehlgeschlagen.");
+      }
+    } finally {
+      this.warmupBusy = false;
+    }
+  }
+
+  /** Reads the current cookie jar of the long-running curl_cffi session. */
+  async checkSessionCookies(): Promise<void> {
+    this.error = "";
+    this.sessionCookiesResult = "";
+    const result = await this.electron.mmSessionCookies();
+    if (result.success) {
+      this.sessionCookies = Array.isArray(result.cookies) ? result.cookies : [];
+      this.sessionCookiesResult = this.i18n.t("Session-Cookies: {count}", { count: this.sessionCookies.length });
+    } else {
+      this.error = result.error || this.i18n.t("Session-Cookies konnten nicht gelesen werden.");
+    }
+  }
+
   async loadAccounts(): Promise<void> {
     const result = await this.electron.getAccounts();
     if (!result.success) return;
@@ -1770,7 +1843,7 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const directLane = Boolean(this.selectedModule?.directLane) && !earlyGate && this.taskMode === "auto-checkout";
+    const directLane = Boolean(this.selectedModule?.directLane) && this.moduleMode !== "monitor-auto" && !earlyGate && this.taskMode === "auto-checkout";
     const prefix = earlyGate ? "gate" : directLane ? "direct" : this.taskMode === "auto-checkout" ? "auto" : "monitor";
     const taskId = `${prefix}_${Date.now()}`;
     const intervalSeconds = Math.max(1, Math.floor(Number(this.taskIntervalSeconds) || 30));
@@ -1827,7 +1900,14 @@ export class AppComponent implements OnInit, OnDestroy {
               }
             : { mode: "product-monitor" }
         };
-    if (!earlyGate && !directLane) data["productCriteria"] = { searchTerm: this.searchTerm.trim() };
+    if (!earlyGate && !directLane) {
+      const maxPrice = Number(this.taskMaxPrice);
+      data["productCriteria"] = {
+        searchTerm: this.searchTerm.trim(),
+        requireAvailable: true,
+        ...(Number.isFinite(maxPrice) && maxPrice > 0 ? { maxPrice } : {})
+      };
+    }
 
     const result = await this.electron.createTask({
       id: taskId,

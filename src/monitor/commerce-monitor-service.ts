@@ -22,6 +22,8 @@ export interface CommerceMonitorServiceOptions {
   searchLimit?: number;
   preCheckoutGate?: PreCheckoutGate;
   browserFallback?: BrowserProductFallback;
+  /** Optional warm-up (e.g. harvest shop cookies) before/while monitoring. */
+  warmUp?: (task: Task, shop: CommerceShop, signal?: AbortSignal) => Promise<void>;
   onEvent?: (taskId: string, event: ProductMonitorEvent) => void;
   onGateEvent?: (taskId: string, event: PreCheckoutGateEvent) => void;
 }
@@ -167,6 +169,11 @@ export class CommerceMonitorService implements ITaskExecutor {
     }
 
     try {
+      // Warm start: never begin cold. Optional hook (e.g. MediaMarkt harvests
+      // its cookies in a browser once) runs before the first API poll and is
+      // refreshed every 30 minutes.
+      await this.options.warmUp?.(task, shop, controller.signal).catch(() => undefined);
+      let lastWarmUpAt = Date.now();
       while (!controller.signal.aborted) {
         if (strategy.mode === "early-gate") {
           await this.runGateCycle(task, shop, controller.signal);
@@ -175,6 +182,10 @@ export class CommerceMonitorService implements ITaskExecutor {
         }
         task.lastError = undefined;
         if (controller.signal.aborted) break;
+        if (this.options.warmUp && Date.now() - lastWarmUpAt >= 30 * 60_000) {
+          await this.options.warmUp(task, shop, controller.signal).catch(() => undefined);
+          lastWarmUpAt = Date.now();
+        }
         await abortableDelay(this.intervalFor(task), controller.signal);
       }
       task.lastError = undefined;
@@ -304,6 +315,9 @@ export class CommerceMonitorService implements ITaskExecutor {
       this.options.onEvent?.(task.id, event);
     }
 
+    // Heartbeat so the live console shows the monitor is polling even when
+    // nothing changed.
+    process.stderr.write(`[MONITOR] cycle shop=${resolvedShop.id} matched=${ranked.length} events=${relevantEvents.length}\n`);
     return relevantEvents;
   }
 

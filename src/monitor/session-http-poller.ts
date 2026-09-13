@@ -41,7 +41,7 @@ export class SessionHttpPoller {
     const script = this.resolveScript();
     const child = spawn(process.env["ARES_PYTHON_EXECUTABLE"]?.trim() || "python", ["-u", script], {
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" }
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" }
     });
     this.child = child;
     child.stdout.setEncoding("utf8");

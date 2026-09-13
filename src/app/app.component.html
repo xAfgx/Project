@@ -29,6 +29,7 @@
                 <label class="span-2" *ngIf="moduleShopOptions.length === 0"><span>{{ 'Store URL' | t }}</span><input [(ngModel)]="moduleShopUrl" [placeholder]="'https://shop.example' | t"></label>
               </ng-container>
               <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor' && !(selectedModule?.id === 'mediamarkt' && moduleGoal === 'account')"><span>{{ 'Product / keyword / URL' | t }}</span><input [(ngModel)]="searchTerm" [placeholder]="'Pokemon 151 Booster Bundle' | t"></label>
+              <label *ngIf="monitorStrategyMode === 'product-monitor' && !(selectedModule?.id === 'mediamarkt' && moduleGoal === 'account')"><span>{{ 'Max. Preis (€)' | t }}</span><input [(ngModel)]="taskMaxPrice" type="number" min="0" placeholder="70"></label>
               <ng-container *ngIf="selectedModule?.id === 'mediamarkt' && moduleGoal === 'account'">
                 <label class="span-2"><span>{{ 'E-Mail' | t }}</span><input [(ngModel)]="newAccount.email" placeholder="name@gmx.net"></label>
                 <label class="span-2"><span>{{ 'Passwort (leer = generieren)' | t }}</span><input [(ngModel)]="newAccount.password"></label>
@@ -739,6 +740,32 @@ socks5://user:pass@host:port' | t"></textarea>
               </div>
             </ng-container>
 
+            <ng-container *ngIf="settingsSection === 'mediamarkt'">
+              <div class="settings-title"><span class="kicker">{{ 'MEDIAMARKT' | t }}</span><h3>{{ 'Cookies & API-Session' | t }}</h3><p>{{ 'Browser-Cookies ernten (Consent/Clearance/Forter) und prüfen, ob die curl_cffi-Session sie übernommen hat.' | t }}</p></div>
+              <div class="settings-list">
+                <div class="settings-row">
+                  <div><strong>{{ 'Cookies harvesten' | t }}</strong><small>{{ warmupResult || 'Öffnet den Browser, holt alle MediaMarkt-Cookies und schreibt die Jar-Datei.' | t }}</small></div>
+                  <button class="ghost" type="button" [disabled]="warmupBusy" (click)="warmupMediamarkt()">{{ 'Starten' | t }}</button>
+                </div>
+                <details class="cookie-details" *ngIf="warmupCookies.length">
+                  <summary>{{ warmupCookies.length }} {{ 'geerntete Cookies' | t }}</summary>
+                  <div class="cookie-list">
+                    <div class="cookie-line" *ngFor="let cookie of warmupCookies"><b>{{ cookie.name }}</b><span>{{ cookie.value }}</span><em>{{ cookie.domain }}</em></div>
+                  </div>
+                </details>
+                <div class="settings-row">
+                  <div><strong>{{ 'Session-Cookies prüfen' | t }}</strong><small>{{ sessionCookiesResult || 'Zeigt die Cookies im curl_cffi-Helfer (Beweis der Übernahme).' | t }}</small></div>
+                  <button class="ghost" type="button" (click)="checkSessionCookies()">{{ 'Prüfen' | t }}</button>
+                </div>
+                <details class="cookie-details" *ngIf="sessionCookies.length">
+                  <summary>{{ sessionCookies.length }} {{ 'Cookies in der Session' | t }}</summary>
+                  <div class="cookie-list">
+                    <div class="cookie-line" *ngFor="let cookie of sessionCookies"><b>{{ cookie.name }}</b><span>{{ cookie.value }}</span><em>{{ cookie.domain }}</em></div>
+                  </div>
+                </details>
+              </div>
+            </ng-container>
+
             <ng-container *ngIf="settingsSection === 'diagnostics'">
               <div class="settings-title"><span class="kicker">{{ 'DIAGNOSTICS' | t }}</span><h3>{{ 'System Snapshot' | t }}</h3><p>{{ 'Zusammenfassung aus aktuellen UI- und Runtime-Daten.' | t }}</p></div>
               <div class="settings-status-grid">
@@ -765,5 +792,22 @@ socks5://user:pass@host:port' | t"></textarea>
       </ng-container>
 
     </main>
+  </section>
+
+  <button class="console-toggle" [class.active]="showLiveConsole" (click)="toggleLiveConsole()" title="Live-Konsole">›_ Log</button>
+  <section class="live-console" *ngIf="showLiveConsole">
+    <header>
+      <span class="console-title">ARES Live Console</span>
+      <span class="console-count">{{ liveLogs.length }}</span>
+      <button class="ghost" type="button" (click)="clearLiveConsole()">{{ 'Clear' | t }}</button>
+      <button class="ghost" type="button" (click)="toggleLiveConsole()">×</button>
+    </header>
+    <div class="console-body">
+      <div class="console-line" *ngFor="let log of liveLogs">
+        <span class="console-time">{{ liveLogTime(log.at) }}</span>
+        <span class="console-text">{{ log.line }}</span>
+      </div>
+      <div class="console-empty" *ngIf="!liveLogs.length">{{ 'Warte auf [MONITOR]/[JOURNEY]-Zeilen …' | t }}</div>
+    </div>
   </section>
 </div>

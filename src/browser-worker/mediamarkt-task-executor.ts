@@ -45,6 +45,8 @@ interface ActiveDirectSession {
 interface DiscoveryInput {
   productName: string;
   keywords: string[];
+  /** When set (auto-checkout child), go straight to this product URL. */
+  productUrl?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -171,18 +173,29 @@ export class MediaMarktTaskExecutor implements ITaskExecutor {
 
       const discoveryDeadline = Date.now() + this.discoveryMaxMs(task);
       let product: ProductObservation | undefined;
-      while (!session.controller.signal.aborted && Date.now() < discoveryDeadline) {
-        product = await this.withDebugSync(task, page, () => journey.discover(page, shop, {
-          productName: discovery.productName,
-          keywords: [...discovery.keywords]
-        }));
+      if (discovery.productUrl) {
+        // Auto-checkout child: the monitor already matched the product, so go
+        // straight to the PDP instead of searching again.
+        process.stderr.write(`[JOURNEY] mediamarkt direct-url ${discovery.productUrl}\n`);
+        product = await this.withDebugSync(task, page, () => journey.openProductUrl
+          ? journey.openProductUrl(page, shop, discovery.productUrl!, discovery.productName)
+          : Promise.resolve(undefined));
         this.syncDebug(task, page);
         this.emit(task);
-        if (product) break;
-        // A challenge can appear on the storefront/search step; solve it before
-        // the next discovery attempt instead of retrying into a blocked page.
-        await this.handleChallenges(page, task, 15_000);
-        await this.delay(this.discoveryIntervalMs(task), session.controller.signal);
+      } else {
+        while (!session.controller.signal.aborted && Date.now() < discoveryDeadline) {
+          product = await this.withDebugSync(task, page, () => journey.discover(page, shop, {
+            productName: discovery.productName,
+            keywords: [...discovery.keywords]
+          }));
+          this.syncDebug(task, page);
+          this.emit(task);
+          if (product) break;
+          // A challenge can appear on the storefront/search step; solve it before
+          // the next discovery attempt instead of retrying into a blocked page.
+          await this.handleChallenges(page, task, 15_000);
+          await this.delay(this.discoveryIntervalMs(task), session.controller.signal);
+        }
       }
       if (session.controller.signal.aborted) return true;
       if (!product) throw new Error("MediaMarkt-Discovery-Zeitfenster ohne passenden Produkt-Treffer beendet.");
@@ -304,7 +317,9 @@ export class MediaMarktTaskExecutor implements ITaskExecutor {
       postQueue?.["productName"] ?? trigger?.["productTitle"] ?? criteria?.["searchTerm"] ?? data["searchTerm"] ?? task.config.name ?? ""
     ).trim();
     const keywords = normalizeDiscoveryKeywords(postQueue?.["keywords"] ?? []);
-    return { productName, keywords };
+    const rawUrl = String(trigger?.["productUrl"] ?? criteria?.["url"] ?? data["productUrl"] ?? "").trim();
+    const productUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : undefined;
+    return { productName, keywords, productUrl };
   }
 
   // TEMPORARY LIVE DEBUG (remove after live validation): mirror the journey's

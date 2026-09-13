@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { execFileSync } from "child_process";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { TaskOrchestrator } from "../orchestrator";
 import { WorkerMock } from "../mocks";
@@ -39,6 +40,7 @@ import { registerProfilePaymentIpc } from "./profile-payment-controller";
 import { registerCaptchaProviderIpc } from "./captcha-provider-controller";
 import { registerMailIpc } from "./mail-controller";
 import { registerAccountIpc } from "./account-controller";
+import { registerTriggerServer } from "./trigger-controller";
 
 let mainWindow: BrowserWindow | null = null;
 let orchestrator: TaskOrchestrator;
@@ -48,6 +50,7 @@ let profilePaymentVault: ProfilePaymentVault;
 let browserProfileRoot = "";
 let commerceExecutor: CommerceTaskExecutorRouter;
 let commerceMonitor: CommerceMonitorService;
+let mediaMarktAdapter: { sessionCookies?: () => Promise<Array<Record<string, unknown>>> } | undefined;
 let autoCheckoutCoordinator: MonitorAutoCheckoutCoordinator;
 let taskStore: SqliteTaskStore;
 let persistenceCoordinator: TaskPersistenceCoordinator;
@@ -77,6 +80,33 @@ function broadcastMonitorUpdate(payload: unknown): void {
     }
   }
 }
+
+function broadcastLiveLog(payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("live-log", payload);
+    }
+  }
+}
+
+// Stream the worker's [MONITOR]/[JOURNEY]/[TRIGGER] stderr lines to the renderer
+// for the terminal-style live console. Pure observation; logging behaviour is
+// unchanged (the original writer always runs).
+const LIVE_LOG_PATTERN = /\[(MONITOR|JOURNEY|TRIGGER)\]/;
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = function liveLogStderr(chunk: unknown, ...rest: unknown[]): boolean {
+  try {
+    const text = String(chunk ?? "");
+    if (LIVE_LOG_PATTERN.test(text)) {
+      for (const line of text.split(/\r?\n/)) {
+        if (line.trim()) broadcastLiveLog({ at: Date.now(), line });
+      }
+    }
+  } catch {
+    // Live logging must never break the process.
+  }
+  return (originalStderrWrite as (...args: unknown[]) => boolean)(chunk, ...rest);
+} as typeof process.stderr.write;
 
 const shops = new Map<string, CommerceShop>();
 const profileRepository = new ProfileRepository();
@@ -237,6 +267,59 @@ async function closeVisibleProductMonitorBrowser(taskId: string): Promise<void> 
   broadcastMonitorUpdate({ taskId: id, browserMonitor: { status: "closed", profileId } });
 }
 
+/**
+ * MediaMarkt warm start: open the profile browser once, let the storefront set
+ * its cookies (consent, clearance, forter, ...), write them to a JSON jar, then
+ * close the browser. The curl_cffi API monitor reads that jar. Opt-in via
+ * ARES_MM_WARMUP=1 so nothing changes by default.
+ */
+async function harvestMediaMarktCookies(profile: AresProfile, shop: CommerceShop): Promise<{ cookies: number; jarPath: string; list: Array<Record<string, unknown>> }> {
+  await profileBrowserController.open(profile, { startUrl: shop.baseUrl });
+  await new Promise(resolve => setTimeout(resolve, 6_000));
+  const cookies = await profileBrowserController.captureCookies(profile.id);
+  const jar = cookies
+    .filter(cookie => String(cookie.domain || "").toLowerCase().includes("mediamarkt"))
+    .map(cookie => ({ name: cookie.name, value: cookie.value, domain: cookie.domain, path: cookie.path || "/" }));
+  const jarPath = path.join(os.tmpdir(), "ares-mm-cookies.json");
+  fs.writeFileSync(jarPath, JSON.stringify(jar, null, 2), "utf8");
+  return { cookies: jar.length, jarPath, list: jar };
+}
+
+async function warmUpMediaMarktCookies(task: any, shop: CommerceShop): Promise<void> {
+  if (shop.platform !== "mediamarkt") return;
+  if (process.env["ARES_MM_WARMUP"] === "0") return; // opt-out
+  const action = monitorAction(task);
+  const profileId = String(
+    task?.config?.data?.["profileId"] ??
+    action?.profileId ??
+    action?.runtimeProfileId ??
+    task?.config?.data?.["runtimeProfileId"] ??
+    ""
+  ).trim();
+  if (!profileId) {
+    process.stderr.write("[MONITOR] mediamarkt warm-up skipped: kein Profil an der Task\n");
+    return;
+  }
+  const profile = profileRepository.get(profileId);
+  if (!profile) {
+    process.stderr.write(`[MONITOR] mediamarkt warm-up skipped: Profil ${profileId} nicht gefunden\n`);
+    return;
+  }
+  if (profileBrowserController.isOpen(profileId)) {
+    process.stderr.write("[MONITOR] mediamarkt warm-up skipped: Profil-Browser bereits offen\n");
+    return;
+  }
+  process.stderr.write(`[MONITOR] mediamarkt warm-up start profile=${profile.name || profileId}\n`);
+  try {
+    const result = await harvestMediaMarktCookies(profile, shop);
+    process.stderr.write(`[MONITOR] mediamarkt warm-up cookies=${result.cookies} jar=${result.jarPath}\n`);
+  } catch (error) {
+    process.stderr.write(`[MONITOR] mediamarkt warm-up failed: ${error instanceof Error ? error.message : String(error)}\n`);
+  } finally {
+    await profileBrowserController.close(profileId).catch(() => undefined);
+  }
+}
+
 async function createBackend(): Promise<void> {
   const userData = app.getPath("userData");
   profileRepository.setStoragePath(path.join(userData, "profiles.json"));
@@ -269,14 +352,26 @@ async function createBackend(): Promise<void> {
   taskStore = await SqliteTaskStore.open(path.join(userData, "ares.sqlite"));
 
   const productApiRouter = new CommerceProductApiRouter();
+  mediaMarktAdapter = productApiRouter.get("mediamarkt") as { sessionCookies?: () => Promise<Array<Record<string, unknown>>> } | undefined;
   commerceMonitor = new CommerceMonitorService(
     shopId => shops.get(shopId),
     productApiRouter,
     taskStore,
     {
       preCheckoutGate: new PassiveHttpPreCheckoutGate(),
+      warmUp: (task, shop) => warmUpMediaMarktCookies(task, shop),
       onEvent: (taskId, event) => {
         broadcastMonitorUpdate({ taskId, event });
+        // Mirror the product event into the terminal-style live console.
+        try {
+          const product = event.current;
+          const name = product?.variantTitle ? `${product.title} · ${product.variantTitle}` : product?.title;
+          const price = product?.price ? ` · ${product.price.amount} ${product.price.currency ?? ""}`.trimEnd() : "";
+          const pickup = product?.attributes?.["pickup"] ? ` · Abholung: ${product.attributes["pickup"]}` : "";
+          broadcastLiveLog({ at: Date.now(), line: `[MONITOR] product:${event.type} ${name ?? ""}${price}${pickup}` });
+        } catch {
+          // Live console must never affect the monitor.
+        }
         void (async () => {
           if (event.current.available) await closeVisibleProductMonitorBrowser(taskId);
           await autoCheckoutCoordinator?.handleProductEvent(taskId, event);
@@ -339,6 +434,19 @@ async function createBackend(): Promise<void> {
   });
   persistenceCoordinator = new TaskPersistenceCoordinator(orchestrator, taskStore);
   await orchestrator.initialize();
+
+  // Localhost-only trigger so an always-on listener (e.g. Discord watcher on a
+  // Raspberry Pi) can start a predefined task on a drop.
+  registerTriggerServer({
+    startTask: async taskId => {
+      const result = await startTaskById(taskId).catch(error => ({
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      }));
+      return { success: result.success, error: result.error };
+    },
+    onLog: message => process.stderr.write(`[TRIGGER] ${message}\n`)
+  });
 
   const configuredConcurrency = Number(process.env["ARES_MAX_CONCURRENT_TASKS"] ?? "4");
   const maxConcurrentTasks = Number.isFinite(configuredConcurrency)
@@ -561,6 +669,38 @@ ipcMain.handle("get-shops", () => ({
   earlyGateReady: commerceExecutor?.hasEarlyGateExecutor() ?? false
 }));
 
+// Manual MediaMarkt warm-up test: opens the profile browser, harvests cookies
+// and reports the count + jar path. Independent of ARES_MM_WARMUP.
+ipcMain.handle("warmup-mediamarkt", async (_event, profileId?: string) => {
+  const shop = [...shops.values()].find(candidate => candidate.platform === "mediamarkt");
+  if (!shop) return { success: false, error: "Kein MediaMarkt-Shop registriert." };
+  const id = String(profileId ?? "").trim() || profileRepository.getAll()[0]?.id || "";
+  const profile = id ? profileRepository.get(id) : undefined;
+  if (!profile) return { success: false, error: "Kein Profil gefunden." };
+  if (profileBrowserController.isOpen(profile.id)) {
+    return { success: false, error: "Profil-Browser ist bereits offen." };
+  }
+  try {
+    const result = await harvestMediaMarktCookies(profile, shop);
+    return { success: true, cookies: result.cookies, jarPath: result.jarPath, list: result.list };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    await profileBrowserController.close(profile.id).catch(() => undefined);
+  }
+});
+
+// Current cookie jar of the long-running curl_cffi session (all domains).
+ipcMain.handle("mm-session-cookies", async () => {
+  try {
+    if (!mediaMarktAdapter?.sessionCookies) return { success: false, cookies: [], error: "MediaMarkt-Adapter nicht verfügbar." };
+    const cookies = await mediaMarktAdapter.sessionCookies();
+    return { success: true, cookies };
+  } catch (error) {
+    return { success: false, cookies: [], error: error instanceof Error ? error.message : String(error) };
+  }
+});
+
 ipcMain.handle("register-shop", (_event, input) => {
   if (!input?.id || !input?.baseUrl) {
     return { success: false, error: "Shop-ID und Shop-URL sind erforderlich." };
@@ -604,28 +744,32 @@ ipcMain.handle("create-task", (_event, input: TaskConfig) => {
   }
 });
 
+async function startTaskById(taskId: string): Promise<{ success: boolean; error?: string; task?: unknown }> {
+  const existing = orchestrator.getTask(taskId);
+  if (!existing) return { success: false, error: `Task ${taskId} not found.` };
+
+  if (isCommerceMonitorTask(existing)) {
+    await openVisibleProductMonitorBrowser(existing);
+    void orchestrator.startTask(taskId).catch(async error => {
+      await closeVisibleProductMonitorBrowser(taskId);
+      existing.lastError = error instanceof Error ? error.message : String(error);
+      broadcastTaskUpdate(existing);
+    });
+    broadcastTaskUpdate(existing);
+    return { success: true, task: existing };
+  }
+
+  await orchestrator.startTask(taskId);
+  const task = orchestrator.getTask(taskId);
+  broadcastTaskUpdate(task);
+  return task?.lastError
+    ? { success: false, error: task.lastError, task }
+    : { success: true, task };
+}
+
 ipcMain.handle("start-task", async (_event, taskId: string) => {
   try {
-    const existing = orchestrator.getTask(taskId);
-    if (!existing) return { success: false, error: `Task ${taskId} not found.` };
-
-    if (isCommerceMonitorTask(existing)) {
-      await openVisibleProductMonitorBrowser(existing);
-      void orchestrator.startTask(taskId).catch(async error => {
-        await closeVisibleProductMonitorBrowser(taskId);
-        existing.lastError = error instanceof Error ? error.message : String(error);
-        broadcastTaskUpdate(existing);
-      });
-      broadcastTaskUpdate(existing);
-      return { success: true, task: existing };
-    }
-
-    await orchestrator.startTask(taskId);
-    const task = orchestrator.getTask(taskId);
-    broadcastTaskUpdate(task);
-    return task?.lastError
-      ? { success: false, error: task.lastError, task }
-      : { success: true, task };
+    return await startTaskById(taskId);
   } catch (error) {
     return {
       success: false,

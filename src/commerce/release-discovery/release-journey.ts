@@ -20,4 +20,6 @@ export interface ReleaseJourney {
   isOrderConfirmed?(page: Page, shop: CommerceShop): Promise<boolean>;
   /** Optional account registration flow (MediaMarkt). Only called for registration tasks. */
   registerAccount?(page: Page, shop: CommerceShop, input: unknown, signal?: AbortSignal): Promise<{ status: "confirmed" | "failed"; message: string }>;
+  /** Optional direct product-URL entry for auto-checkout children (skips search). */
+  openProductUrl?(page: Page, shop: CommerceShop, url: string, title?: string): Promise<ProductObservation | undefined>;
 }
