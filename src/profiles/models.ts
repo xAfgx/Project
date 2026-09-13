@@ -25,6 +25,10 @@ export interface ContactProfile {
   lastName: string;
   email: string;
   phone?: string;
+  /** "Herr" | "Frau" (or a shop-specific value) for registration forms. */
+  salutation?: string;
+  /** ISO date (YYYY-MM-DD) used by registration forms that require a birth date. */
+  birthDate?: string;
 }
 
 export interface BrowserProfileConfig {
@@ -32,6 +36,12 @@ export interface BrowserProfileConfig {
   userAgent?: string;
   /** Enables semantic/KI field resolution. Missing means enabled for backwards compatibility. */
   kiAutofill?: boolean;
+}
+
+/** Optional shop account for logged-in checkout. Absence keeps guest checkout. */
+export interface AccountCredentials {
+  email: string;
+  password: string;
 }
 
 export interface AresProfile {
@@ -48,6 +58,8 @@ export interface AresProfile {
   proxy?: ProxyConfig;
   preferredProxyId?: string;
   browser?: BrowserProfileConfig;
+  /** Optional shop account; only used by journeys that support logged-in checkout. */
+  account?: AccountCredentials;
   /** Non-sensitive preference only. Card number/CVC live only in the separate encrypted profile payment vault. */
   paymentPreference?: StoredPaymentPreference;
 }

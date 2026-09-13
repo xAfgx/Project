@@ -11,6 +11,11 @@
               <button [class.active]="taskMode === 'auto-checkout'" (click)="taskMode = 'auto-checkout'">{{ 'Auto checkout' | t }}</button>
             </div>
 
+            <div class="segmented secondary" *ngIf="selectedModule?.id === 'mediamarkt'">
+              <button [class.active]="moduleGoal === 'checkout'" (click)="moduleGoal = 'checkout'">{{ 'Checkout' | t }}</button>
+              <button [class.active]="moduleGoal === 'account'" (click)="moduleGoal = 'account'">{{ 'Account erstellen' | t }}</button>
+            </div>
+
             <app-monitor-runtime-preload *ngIf="monitorStrategyMode === 'product-monitor'"></app-monitor-runtime-preload>
 
             <span class="builder-section">{{ 'Ziel & Produkt' | t }}</span>
@@ -23,7 +28,11 @@
                 <label *ngIf="moduleShopOptions.length === 1"><span>{{ 'Shop' | t }}</span><input [value]="selectedModuleShop?.name" readonly></label>
                 <label class="span-2" *ngIf="moduleShopOptions.length === 0"><span>{{ 'Store URL' | t }}</span><input [(ngModel)]="moduleShopUrl" [placeholder]="'https://shop.example' | t"></label>
               </ng-container>
-              <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor'"><span>{{ 'Product / keyword / URL' | t }}</span><input [(ngModel)]="searchTerm" [placeholder]="'Pokemon 151 Booster Bundle' | t"></label>
+              <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor' && !(selectedModule?.id === 'mediamarkt' && moduleGoal === 'account')"><span>{{ 'Product / keyword / URL' | t }}</span><input [(ngModel)]="searchTerm" [placeholder]="'Pokemon 151 Booster Bundle' | t"></label>
+              <ng-container *ngIf="selectedModule?.id === 'mediamarkt' && moduleGoal === 'account'">
+                <label class="span-2"><span>{{ 'E-Mail' | t }}</span><input [(ngModel)]="newAccount.email" placeholder="name@gmx.net"></label>
+                <label class="span-2"><span>{{ 'Passwort (leer = generieren)' | t }}</span><input [(ngModel)]="newAccount.password"></label>
+              </ng-container>
               <label class="span-2" *ngIf="monitorStrategyMode === 'early-gate'"><span>{{ 'Product name' | t }}</span><input [(ngModel)]="earlyGateProductName" [placeholder]="'Elite Trainer Box' | t"></label>
               <label><span>{{ 'Interval' | t }}</span><div class="input-unit"><input [(ngModel)]="taskIntervalSeconds" type="number" min="1"><b>{{ 'sec' | t }}</b></div></label>
             </div>
@@ -43,7 +52,21 @@
 
             <app-profile-cookie-snapshots *ngIf="taskNeedsCheckoutSession" [profileId]="selectedProfileId" mode="select"></app-profile-cookie-snapshots>
 
-            <div class="composer-actions"><small *ngIf="taskNeedsCheckoutSession">{{ 'Profile vault + runtime isolation; no card data is stored in the task.' | t }}</small><small *ngIf="monitorStrategyMode === 'product-monitor' && !taskNeedsCheckoutSession">{{ 'HTTP fast path; Chromium + full runtime only when HTML is empty or ambiguous.' | t }}</small><button class="primary" (click)="createTask()">{{ 'Create task' | t }}</button></div>
+            <div class="composer-actions"><small *ngIf="taskNeedsCheckoutSession">{{ 'Profile vault + runtime isolation; no card data is stored in the task.' | t }}</small><small *ngIf="monitorStrategyMode === 'product-monitor' && !taskNeedsCheckoutSession">{{ 'HTTP fast path; Chromium + full runtime only when HTML is empty or ambiguous.' | t }}</small><button class="primary" *ngIf="selectedModule?.id === 'mediamarkt' && moduleGoal === 'account'" [disabled]="accountBusy || !accountEncryptionAvailable" (click)="createAccountFromModule()">{{ 'Account registrieren' | t }}</button><button class="primary" *ngIf="!(selectedModule?.id === 'mediamarkt' && moduleGoal === 'account')" (click)="createTask()">{{ 'Create task' | t }}</button></div>
+            <div class="settings-list" *ngIf="selectedModule?.id === 'mediamarkt' && moduleGoal === 'account' && accounts.length">
+              <div class="settings-row" *ngFor="let account of accounts; trackBy: trackAccount">
+                <div>
+                  <strong>{{ account.label }}</strong>
+                  <small>{{ account.email }} · {{ account.status }}{{ account.message ? ' · ' + account.message : '' }}</small>
+                  <small *ngIf="accountSecrets[account.id]">{{ 'Passwort' | t }}: {{ accountSecrets[account.id].password }}</small>
+                </div>
+                <div class="row-actions">
+                  <button class="ghost" (click)="revealAccount(account)">{{ 'PW' | t }}</button>
+                  <button class="ghost" [disabled]="accountBusy" (click)="registerAccount(account)">{{ 'Registrieren' | t }}</button>
+                  <button class="icon danger-icon" (click)="deleteAccount(account.id)" [title]="'Delete' | t">×</button>
+                </div>
+              </div>
+            </div>
           </div>
         </ng-template>
 
@@ -119,7 +142,8 @@
       <button [class.active]="activeTab === 'tasks'" (click)="setTab('tasks')"><span class="nav-icon icon-tasks" aria-hidden="true"></span><b>{{ 'Tasks' | t }}</b><em>{{ tasks.length }}</em></button>
       <button [class.active]="activeTab === 'monitor'" (click)="setTab('monitor')"><span class="nav-icon icon-monitor" aria-hidden="true"></span><b>{{ 'Monitor' | t }}</b><em>{{ monitorTaskCount }}</em></button>
       <button [class.active]="activeTab === 'profiles'" (click)="setTab('profiles')"><span class="nav-icon icon-profiles" aria-hidden="true"></span><b>{{ 'Profiles' | t }}</b><em>{{ profiles.length }}</em></button>
-      <button [class.active]="activeTab === 'proxies'" (click)="setTab('proxies')"><span class="nav-icon icon-proxies" aria-hidden="true"></span><b>{{ 'Proxies' | t }}</b><em>{{ proxies.length }}</em></button>
+        <button [class.active]="activeTab === 'proxies'" (click)="setTab('proxies')"><span class="nav-icon icon-proxies" aria-hidden="true"></span><b>{{ 'Proxies' | t }}</b><em>{{ proxies.length }}</em></button>
+        <button [class.active]="activeTab === 'mail'" (click)="setTab('mail')"><span class="nav-icon icon-monitor" aria-hidden="true"></span><b>{{ 'E-Mail / IMAP' | t }}</b><em>{{ mailboxes.length }}</em></button>
       <button [class.active]="activeTab === 'shops'" (click)="setTab('shops')"><span class="nav-icon icon-shops" aria-hidden="true"></span><b>{{ 'Shops' | t }}</b><em>{{ shops.length }}</em></button>
       <button [class.active]="activeTab === 'captchas'" (click)="setTab('captchas')"><span class="nav-icon icon-captchas" aria-hidden="true"></span><b>{{ 'Captchas' | t }}</b></button>
       <button [class.active]="activeTab === 'settings'" (click)="setTab('settings')"><span class="nav-icon icon-settings" aria-hidden="true"></span><b>{{ 'Settings' | t }}</b></button>
@@ -398,6 +422,7 @@
               <label><span>{{ 'Profile ID' | t }}</span><input [(ngModel)]="newProfile.id"></label><label><span>{{ 'Name' | t }}</span><input [(ngModel)]="newProfile.name"></label>
               <label><span>{{ 'First name' | t }}</span><input [(ngModel)]="newProfile.contact.firstName"></label><label><span>{{ 'Last name' | t }}</span><input [(ngModel)]="newProfile.contact.lastName"></label>
               <label><span>{{ 'Email' | t }}</span><input [(ngModel)]="newProfile.contact.email"></label><label><span>{{ 'Phone' | t }}</span><input [(ngModel)]="newProfile.contact.phone"></label>
+              <label><span>{{ 'Anrede' | t }}</span><select [(ngModel)]="newProfile.contact.salutation"><option value="">—</option><option value="Herr">Herr</option><option value="Frau">Frau</option></select></label><label><span>{{ 'Geburtsdatum' | t }}</span><input [(ngModel)]="newProfile.contact.birthDate" placeholder="YYYY-MM-DD"></label>
             </div>
             <ng-container *ngIf="profileTab === 'address'">
               <span class="section-label">{{ 'Shipping' | t }}</span>
@@ -452,6 +477,37 @@ socks5://user:pass@host:port' | t"></textarea>
             </div>
           </article>
           <aside class="surface list-panel"><div class="surface-head"><div><span class="kicker">{{ 'POOL' | t }}</span><h3>{{ 'Saved proxies' | t }}</h3></div><span class="head-chip">{{ proxies.length }}</span></div><div class="empty" *ngIf="!proxies.length">{{ 'No proxies yet.' | t }}</div><div class="proxy-row" *ngFor="let proxy of proxies; trackBy: trackProxy"><div><strong>{{ proxy.name }}</strong><small>{{ getProxyEndpoint(proxy) }}</small><small>{{ getProxyLocation(proxy) }} · {{ getProxyCheckLabel(proxy) }}</small><small *ngIf="proxy.health">{{ 'STATUS' | t }} {{ proxy.health.status | uppercase }} · {{ 'LATENCY' | t }} {{ proxy.health.latencyMs ?? '—' }} ms · {{ 'EXIT IP' | t }} {{ proxy.health.exitIp || '—' }} · {{ 'LOCATION' | t }} {{ getProxyLocation(proxy) }}</small></div><div class="row-actions"><button class="icon" [disabled]="isProxyTesting(proxy.id)" (click)="testProxy(proxy)" [title]="'Test' | t">↻</button><button class="icon" (click)="editProxy(proxy)" [title]="'Edit' | t">✎</button><button class="icon danger-icon" (click)="deleteProxy(proxy.id)" [title]="'Delete' | t">×</button></div></div></aside>
+        </section>
+      </ng-container>
+
+      <ng-container *ngIf="activeTab === 'mail'">
+        <section class="page-head"><div><span class="kicker">{{ 'E-MAIL' | t }}</span><h2>{{ 'E-Mail / IMAP' | t }}</h2><p>{{ 'Generisches IMAP-Postfach für Bestätigungsmails. Das Passwort wird per OS-Verschlüsselung gespeichert.' | t }}</p></div><span class="head-chip">{{ mailboxes.length }} {{ 'mailboxes' | t }}</span></section>
+        <section class="two-col">
+          <article class="surface editor">
+            <span class="section-label">{{ 'Postfach konfigurieren' | t }}</span>
+            <div class="form-grid compact">
+              <label><span>{{ 'ID' | t }}</span><input [(ngModel)]="newMailbox.id"></label>
+              <label><span>{{ 'Name' | t }}</span><input [(ngModel)]="newMailbox.name"></label>
+              <label><span>{{ 'Host' | t }}</span><input [(ngModel)]="newMailbox.host" placeholder="imap.gmx.net"></label>
+              <label><span>{{ 'Port' | t }}</span><input [(ngModel)]="newMailbox.port" type="number"></label>
+              <label><span>{{ 'User' | t }}</span><input [(ngModel)]="newMailbox.user"></label>
+              <label><span>{{ 'Password' | t }}</span><input [(ngModel)]="newMailbox.password" type="password"></label>
+              <label><span>{{ 'Folder' | t }}</span><input [(ngModel)]="newMailbox.mailbox" placeholder="INBOX"></label>
+              <label class="checkbox-row"><span>{{ 'SSL/TLS' | t }}</span><input type="checkbox" [(ngModel)]="newMailbox.secure"></label>
+            </div>
+            <div class="editor-actions">
+              <span *ngIf="!mailboxEncryptionAvailable" class="error">{{ 'OS-Verschlüsselung nicht verfügbar – Passwort kann nicht gespeichert werden.' | t }}</span>
+              <button class="primary" [disabled]="mailboxBusy || !mailboxEncryptionAvailable" (click)="saveMailbox()">{{ 'Save mailbox' | t }}</button>
+            </div>
+          </article>
+          <aside class="surface list-panel">
+            <div class="surface-head"><div><span class="kicker">{{ 'POSTFÄCHER' | t }}</span><h3>{{ 'Gespeichert' | t }}</h3></div><span class="head-chip">{{ mailboxes.length }}</span></div>
+            <div class="empty" *ngIf="!mailboxes.length">{{ 'Noch kein Postfach gespeichert.' | t }}</div>
+            <div class="proxy-row" *ngFor="let mailbox of mailboxes; trackBy: trackMailbox">
+              <div><strong>{{ mailbox.name }}</strong><small>{{ mailbox.user }}</small><small>{{ mailbox.host }}:{{ mailbox.port }} · {{ mailbox.secure ? 'SSL' : 'STARTTLS' }}</small><small *ngIf="mailboxTestResult">{{ mailboxTestResult }}</small></div>
+              <div class="row-actions"><button class="icon" [disabled]="mailboxBusy" (click)="testMailbox(mailbox)" [title]="'Test' | t">↻</button><button class="icon" (click)="editMailbox(mailbox)" [title]="'Edit' | t">✎</button><button class="icon danger-icon" (click)="deleteMailbox(mailbox.id)" [title]="'Delete' | t">×</button></div>
+            </div>
+          </aside>
         </section>
       </ng-container>
 
@@ -650,6 +706,36 @@ socks5://user:pass@host:port' | t"></textarea>
                 </div>
                 <div class="settings-empty-action" *ngIf="!captchaProviders.length"><strong>—</strong><small>{{ 'Keine Provider-Daten vom Backend geliefert.' | t }}</small></div>
                 <button class="ghost" type="button" (click)="setTab('captchas')">{{ 'Captchas öffnen' | t }}</button>
+              </div>
+            </ng-container>
+
+            <ng-container *ngIf="settingsSection === 'mail'">
+              <div class="settings-title"><span class="kicker">{{ 'E-MAIL' | t }}</span><h3>{{ 'IMAP-Postfach' | t }}</h3><p>{{ 'Generisch konfigurierbar. Das Passwort wird per OS-Verschlüsselung gespeichert, nicht im Klartext.' | t }}</p></div>
+              <div class="form-grid compact">
+                <label><span>{{ 'ID' | t }}</span><input [(ngModel)]="newMailbox.id"></label>
+                <label><span>{{ 'Name' | t }}</span><input [(ngModel)]="newMailbox.name"></label>
+                <label><span>{{ 'Host' | t }}</span><input [(ngModel)]="newMailbox.host"></label>
+                <label><span>{{ 'Port' | t }}</span><input [(ngModel)]="newMailbox.port" type="number"></label>
+                <label><span>{{ 'User' | t }}</span><input [(ngModel)]="newMailbox.user"></label>
+                <label><span>{{ 'Password' | t }}</span><input [(ngModel)]="newMailbox.password" type="password"></label>
+                <label><span>{{ 'Folder' | t }}</span><input [(ngModel)]="newMailbox.mailbox"></label>
+                <label><span>{{ 'SSL/TLS' | t }}</span><input type="checkbox" [(ngModel)]="newMailbox.secure"></label>
+              </div>
+              <div class="editor-actions">
+                <span *ngIf="!mailboxEncryptionAvailable" class="error">{{ 'OS-Verschlüsselung nicht verfügbar – Passwort kann nicht gespeichert werden.' | t }}</span>
+                <button class="primary" [disabled]="mailboxBusy || !mailboxEncryptionAvailable" (click)="saveMailbox()">{{ 'Save mailbox' | t }}</button>
+              </div>
+              <div class="settings-list">
+                <div class="settings-row" *ngFor="let mailbox of mailboxes; trackBy: trackMailbox">
+                  <div><strong>{{ mailbox.name }}</strong><small>{{ mailbox.user }} · {{ mailbox.host }}:{{ mailbox.port }} · {{ mailbox.secure ? 'SSL' : 'STARTTLS' }}</small></div>
+                  <div class="row-actions">
+                    <button class="icon" [disabled]="mailboxBusy" (click)="testMailbox(mailbox)" [title]="'Test' | t">↻</button>
+                    <button class="icon" (click)="editMailbox(mailbox)" [title]="'Edit' | t">✎</button>
+                    <button class="icon danger-icon" (click)="deleteMailbox(mailbox.id)" [title]="'Delete' | t">×</button>
+                  </div>
+                </div>
+                <div class="settings-empty-action" *ngIf="!mailboxes.length"><strong>—</strong><small>{{ 'Noch kein Postfach gespeichert.' | t }}</small></div>
+                <small *ngIf="mailboxTestResult">{{ mailboxTestResult }}</small>
               </div>
             </ng-container>
 

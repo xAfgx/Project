@@ -15,12 +15,12 @@ import {
   type ProfileV2Draft
 } from "../profiles/profile-v2";
 
-type AppTab = "dashboard" | "modules" | "tasks" | "monitor" | "profiles" | "proxies" | "shops" | "captchas" | "settings";
+type AppTab = "dashboard" | "modules" | "tasks" | "monitor" | "profiles" | "proxies" | "mail" | "accounts" | "shops" | "captchas" | "settings";
 type ProfileTab = "identity" | "address" | "browser" | "payment";
 type TaskCreationMode = "monitor-only" | "auto-checkout";
 type MonitorStrategyMode = "product-monitor" | "early-gate";
 type ModuleModeId = "monitor" | "direct" | "early-gate";
-type SettingsSection = "general" | "appearance" | "runtime" | "browser" | "monitor" | "providers" | "diagnostics" | "about";
+type SettingsSection = "general" | "appearance" | "runtime" | "browser" | "monitor" | "providers" | "mail" | "accounts" | "diagnostics" | "about";
 type ProfileView = ProfileV2Draft;
 type FlowStepKey = "monitoring" | "gate-detected" | "waiting-queue" | "released" | "post-queue-discovery" | "product-found" | "cart" | "checkout";
 type CaptchaProviderCapability = "token" | "classify";
@@ -80,6 +80,30 @@ interface ProxyImportPreview {
   valid: boolean;
   duplicate: boolean;
   error?: string;
+}
+
+interface MailboxView {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  password: string;
+  mailbox?: string;
+  hasPassword?: boolean;
+}
+
+interface AccountView {
+  id: string;
+  shopId: string;
+  label: string;
+  email: string;
+  status: string;
+  message?: string;
+  createdAt: string;
+  updatedAt: string;
+  hasPassword: boolean;
 }
 
 interface VisionRuntimeStatus {
@@ -156,6 +180,18 @@ export class AppComponent implements OnInit, OnDestroy {
 
   newProfile: ProfileView = this.emptyProfile();
   newProxy: AresProxy = this.emptyProxy();
+  mailboxes: MailboxView[] = [];
+  newMailbox: MailboxView = this.emptyMailbox();
+  mailboxEncryptionAvailable = false;
+  mailboxTestResult = "";
+  mailboxBusy = false;
+  accounts: AccountView[] = [];
+  newAccount = { shopId: "mediamarkt", email: "", password: "", label: "" };
+  accountEncryptionAvailable = false;
+  accountBusy = false;
+  accountSecrets: Record<string, { email: string; password: string }> = {};
+  /** MediaMarkt composer goal: normal checkout task or account registration. */
+  moduleGoal: "checkout" | "account" = "checkout";
   newShop: { id: string; name: string; baseUrl: string; platform: CommercePlatform } = {
     id: "",
     name: "",
@@ -314,6 +350,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { id: "browser", label: "Browser & Vision", note: "Manual browser actions" },
     { id: "monitor", label: "Monitor & Network", note: "Pipeline status" },
     { id: "providers", label: "Providers", note: "Captcha overview" },
+    { id: "mail", label: "E-Mail / IMAP", note: "Confirmation mails" },
     { id: "diagnostics", label: "Diagnostics", note: "Snapshot export" },
     { id: "about", label: "About", note: "Build facts" }
   ];
@@ -350,6 +387,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.loadShops(),
       this.loadProfiles(),
       this.loadProxies(),
+      this.loadMailboxes(),
+      this.loadAccounts(),
       this.loadTasks(),
       this.loadSystemStatus(),
       this.loadCaptchaProviders()
@@ -1356,6 +1395,241 @@ export class AppComponent implements OnInit, OnDestroy {
     if (Array.isArray(result.executorPlatforms)) this.executorPlatforms = result.executorPlatforms;
     if (typeof result.earlyGateReady === "boolean") this.system.earlyGateReady = result.earlyGateReady;
     if (!this.selectedShopId && this.shops.length > 0) this.selectedShopId = this.shops[0].id;
+  }
+
+  emptyMailbox(): MailboxView {
+    return { id: "", name: "", host: "", port: 993, secure: true, user: "", password: "", mailbox: "INBOX" };
+  }
+
+  async loadMailboxes(): Promise<void> {
+    const result = await this.electron.getMailboxes();
+    if (!result.success) return;
+    this.mailboxes = Array.isArray(result.mailboxes) ? result.mailboxes : [];
+    this.mailboxEncryptionAvailable = result.encryptionAvailable === true;
+  }
+
+  async saveMailbox(): Promise<void> {
+    this.error = "";
+    this.info = "";
+    this.mailboxBusy = true;
+    try {
+      const result = await this.electron.saveMailbox({
+        id: this.newMailbox.id || `mailbox-${Date.now()}`,
+        name: this.newMailbox.name || this.newMailbox.user,
+        host: this.newMailbox.host,
+        port: Number(this.newMailbox.port) || 993,
+        secure: this.newMailbox.secure !== false,
+        user: this.newMailbox.user,
+        password: this.newMailbox.password || undefined,
+        mailbox: this.newMailbox.mailbox || undefined
+      });
+      if (!result.success) {
+        this.error = result.error || this.i18n.t("IMAP-Postfach konnte nicht gespeichert werden.");
+        return;
+      }
+      this.info = this.i18n.t("IMAP-Postfach gespeichert.");
+      this.newMailbox = this.emptyMailbox();
+      await this.loadMailboxes();
+    } finally {
+      this.mailboxBusy = false;
+    }
+  }
+
+  async testMailbox(mailbox: MailboxView): Promise<void> {
+    this.error = "";
+    this.mailboxTestResult = "";
+    this.mailboxBusy = true;
+    try {
+      const result = await this.electron.testMailbox(mailbox.id);
+      if (result.success) {
+        this.mailboxTestResult = this.i18n.t("Verbindung OK ({count} Nachrichten).", { count: result.result?.messages ?? 0 });
+      } else {
+        this.error = result.error || this.i18n.t("IMAP-Verbindung fehlgeschlagen.");
+      }
+    } finally {
+      this.mailboxBusy = false;
+    }
+  }
+
+  editMailbox(mailbox: MailboxView): void {
+    this.newMailbox = { ...mailbox, password: "" };
+    this.info = this.i18n.t("IMAP-Postfach {name} geladen.", { name: mailbox.name });
+  }
+
+  async deleteMailbox(mailboxId: string): Promise<void> {
+    this.error = "";
+    const result = await this.electron.deleteMailbox(mailboxId);
+    if (!result.success) {
+      this.error = result.error || this.i18n.t("IMAP-Postfach konnte nicht gelöscht werden.");
+      return;
+    }
+    if (this.newMailbox.id === mailboxId) this.newMailbox = this.emptyMailbox();
+    this.info = this.i18n.t("IMAP-Postfach gelöscht.");
+    await this.loadMailboxes();
+  }
+
+  trackMailbox(_index: number, mailbox: MailboxView): string { return mailbox.id; }
+
+  async loadAccounts(): Promise<void> {
+    const result = await this.electron.getAccounts();
+    if (!result.success) return;
+    this.accounts = Array.isArray(result.accounts) ? result.accounts : [];
+    this.accountEncryptionAvailable = result.encryptionAvailable === true;
+  }
+
+  async createAccount(): Promise<void> {
+    this.error = "";
+    this.info = "";
+    this.accountBusy = true;
+    try {
+      const result = await this.electron.createAccount({
+        shopId: this.newAccount.shopId,
+        email: this.newAccount.email,
+        password: this.newAccount.password || undefined,
+        label: this.newAccount.label || undefined
+      });
+      if (!result.success) {
+        this.error = result.error || this.i18n.t("Account konnte nicht erstellt werden.");
+        return;
+      }
+      if (result.account) {
+        this.accountSecrets[result.account.id] = { email: result.account.email, password: result.account.password };
+      }
+      this.info = this.i18n.t("Account angelegt.");
+      this.newAccount = { ...this.newAccount, email: "", password: "", label: "" };
+      await this.loadAccounts();
+    } finally {
+      this.accountBusy = false;
+    }
+  }
+
+  async revealAccount(account: AccountView): Promise<void> {
+    const result = await this.electron.revealAccount(account.id);
+    if (!result.success) {
+      this.error = result.error || this.i18n.t("Account konnte nicht gelesen werden.");
+      return;
+    }
+    this.accountSecrets[account.id] = { email: result.email, password: result.password };
+  }
+
+  async deleteAccount(accountId: string): Promise<void> {
+    const result = await this.electron.deleteAccount(accountId);
+    if (!result.success) {
+      this.error = result.error || this.i18n.t("Account konnte nicht gelöscht werden.");
+      return;
+    }
+    delete this.accountSecrets[accountId];
+    await this.loadAccounts();
+  }
+
+  async registerAccount(account: AccountView): Promise<void> {
+    this.error = "";
+    this.info = "";
+    this.accountBusy = true;
+    try {
+      const secret = await this.electron.revealAccount(account.id);
+      if (!secret.success) {
+        this.error = secret.error || this.i18n.t("Account konnte nicht gelesen werden.");
+        return;
+      }
+      const mailboxId = this.mailboxes[0]?.id;
+      if (!mailboxId) {
+        this.error = this.i18n.t("Zuerst ein IMAP-Postfach unter E-Mail / IMAP speichern.");
+        return;
+      }
+      const mailbox = await this.electron.getMailboxSecret(mailboxId);
+      if (!mailbox.success) {
+        this.error = mailbox.error || this.i18n.t("IMAP-Konfiguration fehlt.");
+        return;
+      }
+      const profile = this.profiles.find(item => item.id === this.selectedProfileId) || this.profiles[0];
+      if (!profile) {
+        this.error = this.i18n.t("Kein Profil vorhanden.");
+        return;
+      }
+      const taskId = `direct_markt-register-${Date.now()}`;
+      const result = await this.electron.createTask({
+        id: taskId,
+        name: this.i18n.t("Account registrieren: {email}", { email: account.email }),
+        shopId: account.shopId || this.selectedShopId || "mediamarkt",
+        data: {
+          profileId: profile.id,
+          browserConfig: { headless: this.headless },
+          accountRegistration: {
+            accountId: account.id,
+            email: secret.email,
+            password: secret.password,
+            firstName: profile.contact.firstName,
+            lastName: profile.contact.lastName,
+            salutation: profile.contact.salutation,
+            birthDate: profile.contact.birthDate,
+            imap: {
+              host: mailbox.config.host,
+              port: mailbox.config.port,
+              secure: mailbox.config.secure,
+              user: mailbox.config.user,
+              password: mailbox.config.password,
+              mailbox: mailbox.config.mailbox
+            }
+          }
+        }
+      });
+      if (!result.success) {
+        this.error = result.error || this.i18n.t("Registrierungs-Task konnte nicht erstellt werden.");
+        return;
+      }
+      const createdId = String(result.taskId || taskId);
+      await this.electron.startTask(createdId);
+      this.info = this.i18n.t("Registrierung gestartet für {email}.", { email: account.email });
+      void this.pollRegistration(createdId, account.id);
+      await this.loadTasks();
+    } finally {
+      this.accountBusy = false;
+    }
+  }
+
+  private async pollRegistration(taskId: string, accountId: string): Promise<void> {
+    for (let attempt = 0; attempt < 180; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+      const status = await this.electron.getTaskStatus(taskId).catch(() => undefined);
+      const result = status?.task?.config?.data?.accountRegistrationResult;
+      if (!result) continue;
+      await this.electron.updateAccountStatus(accountId, result.status, result.message);
+      await this.loadAccounts();
+      return;
+    }
+  }
+
+  trackAccount(_index: number, account: AccountView): string { return account.id; }
+
+  /** Composer entry for "Account erstellen": create the record, then register it. */
+  async createAccountFromModule(): Promise<void> {
+    this.error = "";
+    this.info = "";
+    if (!this.newAccount.email.trim()) {
+      this.error = this.i18n.t("Bitte eine E-Mail angeben.");
+      return;
+    }
+    this.accountBusy = true;
+    try {
+      const created = await this.electron.createAccount({
+        shopId: this.newAccount.shopId || "mediamarkt",
+        email: this.newAccount.email,
+        password: this.newAccount.password || undefined,
+        label: this.newAccount.label || undefined
+      });
+      if (!created.success || !created.account) {
+        this.error = created.error || this.i18n.t("Account konnte nicht erstellt werden.");
+        return;
+      }
+      const account = created.account as AccountView & { password: string };
+      this.accountSecrets[account.id] = { email: account.email, password: account.password };
+      this.newAccount = { ...this.newAccount, email: "", password: "", label: "" };
+      await this.loadAccounts();
+      await this.registerAccount(account);
+    } finally {
+      this.accountBusy = false;
+    }
   }
 
   async loadTasks(): Promise<void> {

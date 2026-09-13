@@ -18,4 +18,6 @@ export interface ReleaseJourney {
   submitOrder(page: Page, shop: CommerceShop, allowFinalPurchase: () => boolean): Promise<boolean>;
   /** Optional strong post-submit confirmation. Missing implementations fail closed. */
   isOrderConfirmed?(page: Page, shop: CommerceShop): Promise<boolean>;
+  /** Optional account registration flow (MediaMarkt). Only called for registration tasks. */
+  registerAccount?(page: Page, shop: CommerceShop, input: unknown, signal?: AbortSignal): Promise<{ status: "confirmed" | "failed"; message: string }>;
 }

@@ -5,6 +5,17 @@ import type { CommerceShop } from "../platforms";
 import { ProductMatcher } from "../../monitor/product-matcher";
 import type { ProductObservation } from "../../monitor/models";
 import type { ReleaseDiscoveryInput, ReleaseJourney } from "../release-discovery/release-journey";
+import { ImapMailbox } from "../../mail/imap-mailbox";
+
+export interface AccountRegistrationInput {
+  email: string;
+  password: string;
+  firstName: string;
+  lastName: string;
+  salutation?: string;
+  birthDate?: string;
+  imap: { host: string; port: number; secure: boolean; user: string; password: string; mailbox?: string };
+}
 
 const ADD_TO_CART_TEXT = /in den warenkorb|in den einkaufswagen/i;
 const CONTINUE_TESTID = '[data-test="checkout-continue-button"], [data-test="checkout-continue-desktop-enabled"], [data-test="checkout-continue-mobile-enabled"], [data-test="checkout-continue-button"] button';
@@ -1061,5 +1072,121 @@ export class MediaMarktReleaseJourney implements ReleaseJourney {
       if (!fallback) fallback = candidate;
     }
     return container ?? fallback;
+  }
+
+  /**
+   * MediaMarkt account registration: email -> 6-digit code from the mailbox via
+   * IMAP -> personal data. Isolated from the checkout flow; only called for
+   * registration tasks and never from discover/addToCart/openCheckout.
+   */
+  async registerAccount(page: Page, shop: CommerceShop, input: AccountRegistrationInput, signal?: AbortSignal): Promise<{ status: "confirmed" | "failed"; message: string }> {
+    const aborted = (): boolean => signal?.aborted === true;
+    const base = shop.baseUrl.replace(/\/$/, "");
+    const registrationUrl = `${base}/de/myaccount/auth/registration`;
+    this.log(`register goto ${registrationUrl}`);
+    try {
+      await page.goto(registrationUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    } catch {
+      return { status: "failed", message: "Registrierungsseite konnte nicht geladen werden." };
+    }
+    if (aborted()) return { status: "failed", message: "Abgebrochen." };
+    await page.waitForLoadState("load", { timeout: 15_000 }).catch(() => undefined);
+    await page.waitForTimeout(2_000).catch(() => undefined);
+
+    // Step 1: email.
+    const emailField = page.locator('#email, input[type="email"], input[name*="email" i]').first();
+    await emailField.waitFor({ state: "visible", timeout: 20_000 }).catch(() => undefined);
+    if (aborted()) return { status: "failed", message: "Abgebrochen." };
+    await emailField.type(input.email, { interKeyDelayMinMs: 60, interKeyDelayMaxMs: 140, clear: true }).catch(() => undefined);
+    await page.locator('[data-test="mms-myacc-registration-email-form-submit"]').first().click({ timeout: 10_000 }).catch(() => undefined);
+    this.log("register email submitted");
+
+    // Step 2: wait for the verification code in the mailbox.
+    const mailbox = new ImapMailbox({
+      id: "registration",
+      name: "registration",
+      host: input.imap.host,
+      port: input.imap.port,
+      secure: input.imap.secure,
+      user: input.imap.user,
+      password: input.imap.password,
+      mailbox: input.imap.mailbox
+    });
+    const code = await mailbox.waitForCode({ since: new Date(Date.now() - 5 * 60_000), limit: 5 }, 180_000, 4_000, signal)
+      .catch(error => {
+        this.log(`register imap error ${error instanceof Error ? error.message : String(error)}`);
+        return undefined;
+      });
+    if (aborted()) return { status: "failed", message: "Abgebrochen." };
+    if (!code) {
+      const probe = await mailbox.fetchLatest({ since: new Date(Date.now() - 10 * 60_000), limit: 5 }).catch(() => []);
+      this.log(`register imap ${input.imap.host}:${input.imap.port} user=${input.imap.user} mailbox=${input.imap.mailbox ?? "INBOX"} probe=${probe.length} subjects=${JSON.stringify(probe.map(message => message.subject).slice(0, 5))}`);
+      return { status: "failed", message: "Kein 6-stelliger Bestätigungscode per IMAP gefunden." };
+    }
+    this.log(`register code=${code}`);
+
+    const digits = code.slice(0, 6).split("");
+    for (let index = 0; index < 6; index++) {
+      const codeInput = page.locator(`#code-input-${index}`).first();
+      await codeInput.type(digits[index] ?? "", { interKeyDelayMinMs: 30, interKeyDelayMaxMs: 80 }).catch(() => undefined);
+    }
+    await page.locator('[data-test="mms-myacc-registration-code-form-submit"]').first().click({ timeout: 10_000 }).catch(() => undefined);
+    await page.waitForTimeout(4_000).catch(() => undefined);
+
+    // Step 3: personal data (best effort; field dump keeps this debuggable).
+    const visibleFields = await page.locator("input, select").evaluateAll((elements: Element[]) => elements
+      .filter(element => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .map(element => ({
+        tag: element.tagName.toLowerCase(),
+        type: element.getAttribute("type") || "",
+        id: (element as HTMLElement).id || "",
+        name: element.getAttribute("name") || "",
+        placeholder: element.getAttribute("placeholder") || "",
+        test: element.getAttribute("data-test") || ""
+      }))
+    ).catch(() => []);
+    process.stderr.write(`[JOURNEY] mediamarkt register-step3-fields ${JSON.stringify(visibleFields)}\n`);
+
+    const fill = async (selector: string, value: string): Promise<void> => {
+      if (!value) return;
+      const field = page.locator(selector).first();
+      if (!await field.isVisible({ timeout: 2_000 }).catch(() => false)) return;
+      await field.type(value, { interKeyDelayMinMs: 50, interKeyDelayMaxMs: 120, clear: true }).catch(() => undefined);
+    };
+
+    // Salutation (Herr/Frau) is a radio group; the value/id may be German or
+    // English depending on the form revision.
+    const salutationRaw = String(input.salutation ?? "").trim().toLowerCase();
+    if (salutationRaw) {
+      const tokens = salutationRaw.startsWith("fr")
+        ? ["frau", "female"]
+        : salutationRaw.startsWith("h")
+          ? ["herr", "male"]
+          : [salutationRaw];
+      for (const token of tokens) {
+        const radio = page.locator(`input[type="radio"][value*="${token}" i], input[type="radio"][id*="${token}" i]`).first();
+        if (await radio.isVisible({ timeout: 1_500 }).catch(() => false)) {
+          await radio.click({ timeout: 5_000 }).catch(() => undefined);
+          break;
+        }
+      }
+    }
+    await fill('input[name*="firstName" i], input[autocomplete="given-name"], #firstName', input.firstName);
+    await fill('input[name*="lastName" i], input[autocomplete="family-name"], #lastName', input.lastName);
+    await fill('input[name*="birth" i], input[id*="birth" i], input[autocomplete="bday"], input[type="date"]', input.birthDate ?? "");
+    await fill('input[type="password"]', input.password);
+    const submit = page.locator('[data-test*="registration" i][data-test*="submit" i], button[type="submit"]').first();
+    await submit.click({ timeout: 10_000 }).catch(() => undefined);
+    await page.waitForTimeout(6_000).catch(() => undefined);
+
+    const url = await this.currentUrl(page);
+    const confirmed = !/registration|auth\/login/i.test(url);
+    return {
+      status: confirmed ? "confirmed" : "failed",
+      message: confirmed ? `Registrierung abgeschlossen (${url})` : `Registrierung nicht bestätigt (${url})`
+    };
   }
 }

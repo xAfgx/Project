@@ -150,6 +150,20 @@ export class MediaMarktTaskExecutor implements ITaskExecutor {
         browserSession: { type: "seleniumbase-cdp", isolatedPerTask: true, userDataDir: handle.userDataDir },
         browserEnvironment: handle.environmentAudit
       };
+
+      // Isolated account-registration lane: no discovery, no cart, no checkout.
+      const registration = asRecord(task.config.data?.["accountRegistration"]);
+      if (registration) {
+        process.stderr.write(`[JOURNEY] mediamarkt account-registration start email=${String(registration["email"] ?? "")}\n`);
+        const result = journey.registerAccount
+          ? await journey.registerAccount(page, shop, registration, session.controller.signal)
+          : { status: "failed" as const, message: "Journey unterstützt keine Registrierung." };
+        task.config.data = { ...(task.config.data ?? {}), accountRegistrationResult: result };
+        this.emit(task);
+        process.stderr.write(`[JOURNEY] mediamarkt account-registration ${result.status}: ${result.message}\n`);
+        return result.status === "confirmed";
+      }
+
       this.markStage(task, "discovery");
       process.stderr.write(`[JOURNEY] mediamarkt-direct start product="${discovery.productName}" keywords=${discovery.keywords.length}\n`);
 

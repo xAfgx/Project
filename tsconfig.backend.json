@@ -19,6 +19,8 @@
     "src/electron/**/*.ts",
     "src/event-bus/**/*.ts",
     "src/interfaces/**/*.ts",
+    "src/mail/**/*.ts",
+    "src/accounts/**/*.ts",
     "src/mocks/**/*.ts",
     "src/models/**/*.ts",
     "src/monitor/**/*.ts",

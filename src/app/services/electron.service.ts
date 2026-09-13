@@ -150,6 +150,61 @@ export class ElectronService {
     return Promise.resolve({ success: true });
   }
 
+  getMailboxes(): Promise<any> {
+    if (this.api) return this.api.getMailboxes();
+    return Promise.resolve({ success: true, mailboxes: [], encryptionAvailable: false });
+  }
+
+  saveMailbox(mailbox: unknown): Promise<any> {
+    if (this.api) return this.api.saveMailbox(mailbox);
+    return Promise.resolve({ success: false, error: "IMAP ist im Browser-Preview nicht verfügbar. Starte die Electron-App." });
+  }
+
+  deleteMailbox(mailboxId: string): Promise<any> {
+    if (this.api) return this.api.deleteMailbox(mailboxId);
+    return Promise.resolve({ success: true, mailboxes: [] });
+  }
+
+  testMailbox(mailbox: unknown): Promise<any> {
+    if (this.api) return this.api.testMailbox(mailbox);
+    return Promise.resolve({ success: false, error: "IMAP ist im Browser-Preview nicht verfügbar. Starte die Electron-App." });
+  }
+
+  fetchMailboxMessages(mailboxId: string, options?: unknown): Promise<any> {
+    if (this.api) return this.api.fetchMailboxMessages(mailboxId, options);
+    return Promise.resolve({ success: false, messages: [], error: "IMAP ist im Browser-Preview nicht verfügbar. Starte die Electron-App." });
+  }
+
+  getMailboxSecret(mailboxId: string): Promise<any> {
+    if (this.api) return this.api.getMailboxSecret(mailboxId);
+    return Promise.resolve({ success: false, error: "Im Browser-Preview nicht verfügbar." });
+  }
+
+  getAccounts(): Promise<any> {
+    if (this.api) return this.api.getAccounts();
+    return Promise.resolve({ success: true, accounts: [], encryptionAvailable: false });
+  }
+
+  createAccount(input: unknown): Promise<any> {
+    if (this.api) return this.api.createAccount(input);
+    return Promise.resolve({ success: false, error: "Account-Erstellung ist im Browser-Preview nicht verfügbar." });
+  }
+
+  updateAccountStatus(accountId: string, status: string, message?: string): Promise<any> {
+    if (this.api) return this.api.updateAccountStatus(accountId, status, message);
+    return Promise.resolve({ success: false });
+  }
+
+  revealAccount(accountId: string): Promise<any> {
+    if (this.api) return this.api.revealAccount(accountId);
+    return Promise.resolve({ success: false, error: "Im Browser-Preview nicht verfügbar." });
+  }
+
+  deleteAccount(accountId: string): Promise<any> {
+    if (this.api) return this.api.deleteAccount(accountId);
+    return Promise.resolve({ success: true, accounts: [] });
+  }
+
   getShops(): Promise<any> {
     if (this.api) return this.api.getShops();
     return Promise.resolve({
