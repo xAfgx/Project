@@ -1,7 +1,6 @@
 import type { Task } from "../models";
 import type { AresProfile } from "../profiles/models";
 import type { ProfileCookieSnapshotCookie } from "../cookies/profile-cookie-snapshot-vault";
-import type { RuntimeDebugEventInput } from "../runtime-debug/runtime-debug-bus";
 import type { RuntimeShop } from "./runtime-types";
 import type { BrowserWorkerHealth } from "./types";
 
@@ -94,11 +93,6 @@ export interface TaskUpdateResponse {
   };
 }
 
-export interface RuntimeDebugResponse {
-  type: "runtime-debug";
-  event: RuntimeDebugEventInput;
-}
-
 export interface HealthResponse {
   type: "health-result";
   requestId: string;
@@ -120,4 +114,4 @@ export interface ErrorResponse {
   error: string;
 }
 
-export type BrowserWorkerResponse = ReadyMessage | ExecuteTaskResponse | TaskUpdateResponse | RuntimeDebugResponse | HealthResponse | AckResponse | ErrorResponse;
+export type BrowserWorkerResponse = ReadyMessage | ExecuteTaskResponse | TaskUpdateResponse | HealthResponse | AckResponse | ErrorResponse;
