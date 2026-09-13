@@ -8,8 +8,85 @@
   <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
+  <style>
+    #ares-boot {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      background: radial-gradient(circle at 50% 34%, rgba(143, 15, 24, .18), transparent 24rem), #050607;
+      color: #f1f2f4;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      transition: opacity .3s ease;
+    }
+    #ares-boot.ares-boot--done {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #ares-boot img {
+      width: 72px;
+      height: 72px;
+      object-fit: contain;
+      animation: ares-boot-pulse 1.4s ease-in-out infinite;
+    }
+    #ares-boot strong {
+      font-size: 18px;
+      letter-spacing: .34em;
+      text-indent: .34em;
+    }
+    #ares-boot small {
+      font-size: 10px;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: #787f89;
+    }
+    #ares-boot .ares-boot__bar {
+      width: 148px;
+      height: 3px;
+      margin-top: 6px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #15171a;
+    }
+    #ares-boot .ares-boot__bar i {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #8f0f18, #de2333);
+      animation: ares-boot-fill .55s cubic-bezier(.2, .7, .3, 1) forwards;
+    }
+    @keyframes ares-boot-pulse {
+      0%, 100% { transform: scale(1); opacity: .92; }
+      50% { transform: scale(1.06); opacity: 1; }
+    }
+    @keyframes ares-boot-fill {
+      0% { width: 0; }
+      55% { width: 68%; }
+      100% { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #ares-boot img {
+        animation: none;
+      }
+      #ares-boot .ares-boot__bar i {
+        animation: none;
+        width: 100%;
+      }
+    }
+  </style>
 </head>
 <body>
+  <div id="ares-boot" aria-hidden="true">
+    <img src="assets/ares-logo-red-katana.png" alt="">
+    <strong>ARES</strong>
+    <small>automation bot</small>
+    <span class="ares-boot__bar"><i></i></span>
+  </div>
   <app-root></app-root>
 </body>
 </html>

@@ -1,5 +1,6 @@
 import { Component } from "@angular/core";
 import { ElectronService } from "../services/electron.service";
+import { I18nService } from "../i18n/i18n.service";
 
 @Component({
   selector: "app-monitor-runtime-preload",
@@ -12,7 +13,7 @@ import { ElectronService } from "../services/electron.service";
         [title]="buttonTitle"
         (click)="prepare()"
       >{{ busy ? '…' : ready ? '✓' : '⚡' }}</button>
-      <span *ngIf="ready" class="runtime-preload__state">Vision ready</span>
+      <span *ngIf="ready" class="runtime-preload__state">{{ 'Vision ready' | t }}</span>
       <span *ngIf="error" class="runtime-preload__error">{{ error }}</span>
     </div>
   `,
@@ -43,12 +44,15 @@ export class MonitorRuntimePreloadComponent {
   ready = false;
   error = "";
 
-  constructor(private readonly electron: ElectronService) {}
+  constructor(
+    private readonly electron: ElectronService,
+    readonly i18n: I18nService
+  ) {}
 
   get buttonTitle(): string {
-    if (this.busy) return "Vision Runtime wird vorbereitet";
-    if (this.ready) return "SigLIP/Vision für den Monitor ist vorgeladen";
-    return "SigLIP/Vision für Browser-Fallback vorladen";
+    if (this.busy) return this.i18n.t("Vision Runtime wird vorbereitet");
+    if (this.ready) return this.i18n.t("SigLIP/Vision für den Monitor ist vorgeladen");
+    return this.i18n.t("SigLIP/Vision für Browser-Fallback vorladen");
   }
 
   async prepare(): Promise<void> {
@@ -59,7 +63,7 @@ export class MonitorRuntimePreloadComponent {
     try {
       const vision = await this.electron.prepareSeleniumBaseVision();
       if (!vision?.success || !vision?.status?.ready) {
-        throw new Error(vision?.error || vision?.status?.error || "Vision Runtime konnte nicht vorbereitet werden.");
+        throw new Error(vision?.error || vision?.status?.error || this.i18n.t("Vision Runtime konnte nicht vorbereitet werden."));
       }
       this.ready = true;
     } catch (error) {

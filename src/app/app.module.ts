@@ -7,6 +7,7 @@ import { MonitorRuntimePreloadComponent } from "./monitor-runtime-preload/monito
 import { ProfilePaymentComponent } from "./profile-payment/profile-payment.component";
 import { ProfileCookieSnapshotsComponent } from "./profile-cookie-snapshots/profile-cookie-snapshots.component";
 import { RuntimeControlComponent } from "./runtime-control/runtime-control.component";
+import { TranslatePipe } from "./i18n/translate.pipe";
 
 @NgModule({
   declarations: [
@@ -15,7 +16,8 @@ import { RuntimeControlComponent } from "./runtime-control/runtime-control.compo
     DropSetupsComponent,
     MonitorRuntimePreloadComponent,
     ProfilePaymentComponent,
-    ProfileCookieSnapshotsComponent
+    ProfileCookieSnapshotsComponent,
+    TranslatePipe
   ],
   imports: [BrowserModule, FormsModule],
   providers: [],

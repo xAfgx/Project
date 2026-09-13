@@ -1,9 +1,9 @@
 <section class="secure-payment-card">
   <div class="secure-payment-head">
     <div>
-      <div class="eyebrow">ZAHLUNGSDATEN</div>
-      <h3>Karten</h3>
-      <small>Verschlüsselt außerhalb von profiles.json gespeichert. Eine Karte kann mehreren Profilen zugewiesen werden; im Checkout werden die Daten nur für die aktive Session entschlüsselt.</small>
+      <div class="eyebrow">{{ 'ZAHLUNGSDATEN' | t }}</div>
+      <h3>{{ 'Karten' | t }}</h3>
+      <small>{{ 'Verschlüsselt außerhalb von profiles.json gespeichert. Eine Karte kann mehreren Profilen zugewiesen werden; im Checkout werden die Daten nur für die aktive Session entschlüsselt.' | t }}</small>
     </div>
     <span class="security-chip" [class.ready]="encryptionAvailable">{{ encryptionAvailable ? 'OS-ENCRYPTED' : 'ENCRYPTION FEHLT' }}</span>
   </div>
@@ -13,9 +13,9 @@
 
   <div class="payment-card-manager">
     <label class="wide">
-      <span>Karte für dieses Profil</span>
+      <span>{{ 'Karte für dieses Profil' | t }}</span>
       <select [ngModel]="assignedCardId" (ngModelChange)="assignCard($event)">
-        <option value="">— keine Karte zugewiesen —</option>
+        <option value="">{{ '— keine Karte zugewiesen —' | t }}</option>
         <option *ngFor="let card of cards" [value]="card.id">{{ card.label }}</option>
       </select>
     </label>
@@ -26,42 +26,42 @@
           <b>{{ card.label }}</b>
           <span>{{ card.view.holderName }} · {{ card.view.expiryMonth }}/{{ card.view.expiryYear }} · {{ card.view.maskedCardNumber }}</span>
         </div>
-        <button class="ghost" type="button" (click)="deleteCard(card.id, $event)">Löschen</button>
+        <button class="ghost" type="button" (click)="deleteCard(card.id, $event)">{{ 'Löschen' | t }}</button>
       </div>
     </div>
-    <div class="empty" *ngIf="!cards.length">Noch keine Karte gespeichert.</div>
+    <div class="empty" *ngIf="!cards.length">{{ 'Noch keine Karte gespeichert.' | t }}</div>
   </div>
 
   <div class="form-grid">
     <label class="wide">
-      <span>Kartenname (optional)</span>
-      <input [(ngModel)]="cardLabel" placeholder="z. B. Visa Hauptkarte">
+      <span>{{ 'Kartenname (optional)' | t }}</span>
+      <input [(ngModel)]="cardLabel" [placeholder]="'z. B. Visa Hauptkarte' | t">
     </label>
     <label class="wide">
-      <span>Karteninhaber</span>
-      <input [(ngModel)]="holderName" autocomplete="cc-name" placeholder="Max Mustermann">
+      <span>{{ 'Karteninhaber' | t }}</span>
+      <input [(ngModel)]="holderName" autocomplete="cc-name" [placeholder]="'Max Mustermann' | t">
     </label>
     <label class="wide">
-      <span>Kartennummer</span>
+      <span>{{ 'Kartennummer' | t }}</span>
       <input [(ngModel)]="cardNumber" inputmode="numeric" autocomplete="cc-number" placeholder="1234 5678 9012 3456">
-      <small *ngIf="configured">Nach dem Speichern wird nur die maskierte Nummer angezeigt.</small>
+      <small *ngIf="configured">{{ 'Nach dem Speichern wird nur die maskierte Nummer angezeigt.' | t }}</small>
     </label>
     <label>
-      <span>Ablaufmonat</span>
-      <input [(ngModel)]="expiryMonth" inputmode="numeric" autocomplete="cc-exp-month" placeholder="MM" maxlength="2">
+      <span>{{ 'Ablaufmonat' | t }}</span>
+      <input [(ngModel)]="expiryMonth" inputmode="numeric" autocomplete="cc-exp-month" [placeholder]="'MM' | t" maxlength="2">
     </label>
     <label>
-      <span>Ablaufjahr</span>
-      <input [(ngModel)]="expiryYear" inputmode="numeric" autocomplete="cc-exp-year" placeholder="YYYY" maxlength="4">
+      <span>{{ 'Ablaufjahr' | t }}</span>
+      <input [(ngModel)]="expiryYear" inputmode="numeric" autocomplete="cc-exp-year" [placeholder]="'YYYY' | t" maxlength="4">
     </label>
     <label>
-      <span>CVC / CVV</span>
-      <input [(ngModel)]="securityCode" type="password" inputmode="numeric" autocomplete="cc-csc" placeholder="{{ configured ? 'gespeichert – leer lassen zum Beibehalten' : 'CVC' }}" maxlength="4">
+      <span>{{ 'CVC / CVV' | t }}</span>
+      <input [(ngModel)]="securityCode" type="password" inputmode="numeric" autocomplete="cc-csc" [placeholder]="configured ? ('stored – leave empty to keep' | t) : 'CVC'" maxlength="4">
     </label>
   </div>
 
   <div class="payment-field-map">
-    <span>Checkout:</span>
+    <span>{{ 'Checkout:' | t }}</span>
     <code>holderName</code>
     <code>cardNumber</code>
     <code>expiry</code>
@@ -70,7 +70,7 @@
 
   <div class="secure-payment-actions">
     <button class="btn btn-primary" type="button" [disabled]="saving || !encryptionAvailable" (click)="save()">
-      {{ saving ? 'Speichere…' : (assignedCardId ? 'Zugewiesene Karte aktualisieren' : 'Neue Karte speichern') }}
+      {{ saving ? ('Saving…' | t) : (assignedCardId ? ('Update assigned card' | t) : ('Save new card' | t)) }}
     </button>
   </div>
 </section>

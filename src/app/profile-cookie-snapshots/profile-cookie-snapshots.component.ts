@@ -1,5 +1,6 @@
 import { Component, EventEmitter, Input, OnChanges, Output, SimpleChanges } from "@angular/core";
 import { ProfileBrowserService } from "../services/profile-browser.service";
+import { I18nService } from "../i18n/i18n.service";
 import {
   ProfileCookieSnapshotService,
   type CookieSnapshotView
@@ -34,7 +35,8 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
 
   constructor(
     private readonly snapshotsApi: ProfileCookieSnapshotService,
-    private readonly browserApi: ProfileBrowserService
+    private readonly browserApi: ProfileBrowserService,
+    readonly i18n: I18nService
   ) {}
 
   ngOnChanges(changes: SimpleChanges): void {
@@ -79,10 +81,10 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     this.error = "";
     try {
       const result = await this.browserApi.open(this.profileId);
-      if (!result?.success) this.error = result?.error || "Profil-Browser konnte nicht geöffnet werden.";
+      if (!result?.success) this.error = result?.error || this.i18n.t("Profil-Browser konnte nicht geöffnet werden.");
       else {
         this.browserOpen = true;
-        this.info = "ARES-Profilbrowser geöffnet. Einloggen/navigieren und danach Session speichern.";
+        this.info = this.i18n.t("ARES-Profilbrowser geöffnet. Einloggen/navigieren und danach Session speichern.");
       }
     } finally {
       this.busy = false;
@@ -94,7 +96,7 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     this.busy = true;
     try {
       const result = await this.browserApi.close(this.profileId);
-      if (!result?.success) this.error = result?.error || "Profil-Browser konnte nicht geschlossen werden.";
+      if (!result?.success) this.error = result?.error || this.i18n.t("Profil-Browser konnte nicht geschlossen werden.");
       else this.browserOpen = false;
     } finally {
       this.busy = false;
@@ -112,7 +114,7 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
         this.selectedId || undefined
       );
       if (!result?.success) {
-        this.error = result?.error || "SeleniumBase-CDP-Profilbrowser konnte nicht geöffnet werden.";
+        this.error = result?.error || this.i18n.t("SeleniumBase-CDP-Profilbrowser konnte nicht geöffnet werden.");
         return;
       }
       this.seleniumBaseBrowserOpen = true;
@@ -120,8 +122,8 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
       this.seleniumBaseUserDataDir = String(result.status?.userDataDir || "");
       this.seleniumBaseAppliedSnapshotId = String(result.status?.appliedSnapshotId || this.selectedId || "");
       this.info = this.selectedId
-        ? "SeleniumBase CDP geöffnet; ausgewählte Session wurde geladen."
-        : "SeleniumBase CDP geöffnet; der eigene persistente SeleniumBase-Profilstate ist aktiv.";
+        ? this.i18n.t("SeleniumBase CDP geöffnet; ausgewählte Session wurde geladen.")
+        : this.i18n.t("SeleniumBase CDP geöffnet; der eigene persistente SeleniumBase-Profilstate ist aktiv.");
     } finally {
       this.busy = false;
     }
@@ -134,13 +136,13 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     try {
       const result = await this.browserApi.closeSeleniumBase(this.profileId);
       if (!result?.success) {
-        this.error = result?.error || "SeleniumBase-CDP-Profilbrowser konnte nicht geschlossen werden.";
+        this.error = result?.error || this.i18n.t("SeleniumBase-CDP-Profilbrowser konnte nicht geschlossen werden.");
         return;
       }
       this.seleniumBaseBrowserOpen = false;
       this.seleniumBasePid = undefined;
       this.seleniumBaseAppliedSnapshotId = "";
-      this.info = "SeleniumBase CDP sauber beendet; Profilstate wurde über sb.quit() geschlossen.";
+      this.info = this.i18n.t("SeleniumBase CDP sauber beendet; Profilstate wurde über sb.quit() geschlossen.");
     } finally {
       this.busy = false;
     }
@@ -153,11 +155,11 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     try {
       const result = await this.browserApi.applySeleniumBaseSnapshot(this.profileId, this.selectedId);
       if (!result?.success) {
-        this.error = result?.error || "Gespeicherte Browser-Session konnte nicht geladen werden.";
+        this.error = result?.error || this.i18n.t("Gespeicherte Browser-Session konnte nicht geladen werden.");
         return;
       }
       this.seleniumBaseAppliedSnapshotId = this.selectedId;
-      this.info = `${result.count ?? 0} Cookies in die laufende SeleniumBase-CDP-Session geladen.`;
+      this.info = this.i18n.t("{count} Cookies in die laufende SeleniumBase-CDP-Session geladen.", { count: result.count ?? 0 });
     } finally {
       this.busy = false;
     }
@@ -166,11 +168,11 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
   async saveSnapshot(): Promise<void> {
     const name = this.snapshotName.trim();
     if (!this.profileId || !name || this.busy) {
-      if (!name) this.error = "Bitte einen Snapshot-Namen eingeben.";
+      if (!name) this.error = this.i18n.t("Bitte einen Snapshot-Namen eingeben.");
       return;
     }
     if (!this.browserOpen) {
-      this.error = "ARES-Profilbrowser zuerst öffnen. Gespeichert werden nur die Cookies der aktuell geöffneten Session.";
+      this.error = this.i18n.t("ARES-Profilbrowser zuerst öffnen. Gespeichert werden nur die Cookies der aktuell geöffneten Session.");
       return;
     }
 
@@ -179,11 +181,11 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     try {
       const result = await this.snapshotsApi.save(this.profileId, name);
       if (!result?.success) {
-        this.error = result?.error || "Browser-Session konnte nicht gespeichert werden.";
+        this.error = result?.error || this.i18n.t("Browser-Session konnte nicht gespeichert werden.");
         return;
       }
       this.snapshotName = "";
-      this.info = `${result.snapshot?.cookieCount ?? 0} Browser-Cookies als Session gespeichert.`;
+      this.info = this.i18n.t("{count} Browser-Cookies als Session gespeichert.", { count: result.snapshot?.cookieCount ?? 0 });
       await this.refresh();
       if (result.snapshot?.id) this.select(result.snapshot.id);
     } finally {
@@ -194,11 +196,11 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
   async saveSeleniumBaseSnapshot(): Promise<void> {
     const name = this.snapshotName.trim();
     if (!this.profileId || !name || this.busy) {
-      if (!name) this.error = "Bitte einen Snapshot-Namen eingeben.";
+      if (!name) this.error = this.i18n.t("Bitte einen Snapshot-Namen eingeben.");
       return;
     }
     if (!this.seleniumBaseBrowserOpen) {
-      this.error = "SeleniumBase-CDP-Profilbrowser zuerst öffnen.";
+      this.error = this.i18n.t("SeleniumBase-CDP-Profilbrowser zuerst öffnen.");
       return;
     }
 
@@ -207,11 +209,11 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     try {
       const result = await this.browserApi.saveSeleniumBaseSnapshot(this.profileId, name);
       if (!result?.success) {
-        this.error = result?.error || "SeleniumBase-Cookies konnten nicht gespeichert werden.";
+        this.error = result?.error || this.i18n.t("SeleniumBase-Cookies konnten nicht gespeichert werden.");
         return;
       }
       this.snapshotName = "";
-      this.info = `${result.snapshot?.cookieCount ?? 0} SeleniumBase-CDP-Cookies als Session gespeichert.`;
+      this.info = this.i18n.t("{count} SeleniumBase-CDP-Cookies als Session gespeichert.", { count: result.snapshot?.cookieCount ?? 0 });
       await this.refresh();
       if (result.snapshot?.id) this.select(result.snapshot.id);
     } finally {
@@ -225,7 +227,7 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
     this.error = "";
     try {
       const result = await this.snapshotsApi.delete(this.profileId, snapshot.id);
-      if (!result?.success) this.error = result?.error || "Session konnte nicht gelöscht werden.";
+      if (!result?.success) this.error = result?.error || this.i18n.t("Session konnte nicht gelöscht werden.");
       else {
         if (this.selectedId === snapshot.id) this.select("");
         if (this.seleniumBaseAppliedSnapshotId === snapshot.id) this.seleniumBaseAppliedSnapshotId = "";
@@ -244,6 +246,6 @@ export class ProfileCookieSnapshotsComponent implements OnChanges {
 
   formatDate(value: string): string {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? value : date.toLocaleString("de-DE");
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString(this.i18n.language === "de" ? "de-DE" : "en-US");
   }
 }

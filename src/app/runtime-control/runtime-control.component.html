@@ -1,13 +1,13 @@
 <section class="runtime-panel">
   <div class="runtime-header">
     <div>
-      <div class="eyebrow">RUNTIME CONTROL</div>
-      <h3>Worker, Queue & Purchase Guard</h3>
-      <p>Live-Status für Browser-Worker, Queue-Telemetrie und die globale finale Kauf-Freigabe.</p>
+      <div class="eyebrow">{{ 'RUNTIME CONTROL' | t }}</div>
+      <h3>{{ 'Worker, Queue & Purchase Guard' | t }}</h3>
+      <p>{{ 'Live-Status für Browser-Worker, Queue-Telemetrie und die globale finale Kauf-Freigabe.' | t }}</p>
     </div>
     <div class="runtime-summary" [class.ok]="healthyWorkerCount === workers.length && workers.length > 0">
       <strong>{{ healthyWorkerCount }}/{{ workers.length || 0 }}</strong>
-      <span>Worker gesund</span>
+      <span>{{ 'Worker gesund' | t }}</span>
     </div>
   </div>
 
@@ -16,19 +16,19 @@
       <div class="purchase-title-row">
         <span class="purchase-orb"></span>
         <div>
-          <small>GLOBAL PURCHASE GUARD</small>
+          <small>{{ 'GLOBAL PURCHASE GUARD' | t }}</small>
           <strong>{{ finalPurchaseAllowed ? 'FINALER KAUF FREIGEGEBEN' : 'FINALER KAUF GESPERRT' }}</strong>
         </div>
       </div>
-      <p *ngIf="!finalPurchaseAllowed">Backend-Default ist AUS. Alle geeigneten Checkout-Tasks stoppen unmittelbar vor dem finalen Submit.</p>
-      <p *ngIf="finalPurchaseAllowed">Freigabe gilt global für kaufbereite Early-Gate-Checkout-Tasks. Der Backend-Guard prüft direkt vor dem Submit erneut.</p>
+      <p *ngIf="!finalPurchaseAllowed">{{ 'Backend-Default ist AUS. Alle geeigneten Checkout-Tasks stoppen unmittelbar vor dem finalen Submit.' | t }}</p>
+      <p *ngIf="finalPurchaseAllowed">{{ 'Freigabe gilt global für kaufbereite Early-Gate-Checkout-Tasks. Der Backend-Guard prüft direkt vor dem Submit erneut.' | t }}</p>
     </div>
 
     <div class="purchase-actions">
-      <div class="purchase-metric"><span>KAUFBEREIT</span><strong>{{ checkoutReadyTasks.length }}</strong></div>
+      <div class="purchase-metric"><span>{{ 'KAUFBEREIT' | t }}</span><strong>{{ checkoutReadyTasks.length }}</strong></div>
       <button type="button" class="purchase-toggle" [class.armed]="finalPurchaseAllowed" [disabled]="purchaseChanging" (click)="setFinalPurchaseAllowed(!finalPurchaseAllowed)">
         <span>{{ finalPurchaseAllowed ? 'AN' : 'AUS' }}</span>
-        <strong>{{ purchaseChanging ? 'SYNC…' : (finalPurchaseAllowed ? 'FÜR ALLE SPERREN' : 'FÜR ALLE FREIGEBEN') }}</strong>
+        <strong>{{ purchaseChanging ? ('SYNC…' | t) : (finalPurchaseAllowed ? ('LOCK FOR ALL' | t) : ('UNLOCK FOR ALL' | t)) }}</strong>
       </button>
     </div>
   </div>
@@ -38,15 +38,15 @@
       <div class="purchase-title-row">
         <span class="purchase-orb"></span>
         <div>
-          <small>CAPMONSTER API</small>
+          <small>{{ 'CAPMONSTER API' | t }}</small>
           <strong>{{ apiKeyConfigured ? 'API-KEY GESETZT' : 'API-KEY NICHT GESETZT' }}</strong>
         </div>
       </div>
-      <p>Datenschutz: Der API-Key wird niemals in der UI angezeigt oder in Testmeldungen ausgegeben.</p>
+      <p>{{ 'Datenschutz: Der API-Key wird niemals in der UI angezeigt oder in Testmeldungen ausgegeben.' | t }}</p>
     </div>
 
     <div class="purchase-actions">
-      <div class="purchase-metric"><span>CHECK</span><strong>{{ apiKeyCheckLabel }}</strong></div>
+      <div class="purchase-metric"><span>{{ 'CHECK' | t }}</span><strong>{{ apiKeyCheckLabel }}</strong></div>
       <button type="button" class="purchase-toggle" [class.armed]="apiKeyCheck?.valid === true" [disabled]="apiKeyTesting || !apiKeyConfigured" (click)="testCapmonsterApiKey()">
         <span>{{ apiKeyCheck?.valid === true ? 'OK' : 'API' }}</span>
         <strong>{{ apiKeyTesting ? 'TEST…' : 'KEY TESTEN' }}</strong>
@@ -56,13 +56,13 @@
 
   <div class="runtime-command-bar">
     <div class="runtime-command-copy">
-      <small>TASK BULK CONTROL</small>
-      <strong>Alle Tasks zentral steuern</strong>
-      <p>Start sendet alle aktuell QUEUED Tasks gleichzeitig. Stop beendet alle laufenden, pausierten und wartenden Tasks.</p>
+      <small>{{ 'TASK BULK CONTROL' | t }}</small>
+      <strong>{{ 'Alle Tasks zentral steuern' | t }}</strong>
+      <p>{{ 'Start sendet alle aktuell QUEUED Tasks gleichzeitig. Stop beendet alle laufenden, pausierten und wartenden Tasks.' | t }}</p>
     </div>
     <div class="runtime-command-metrics">
-      <div class="purchase-metric"><span>STARTBEREIT</span><strong>{{ startableTasks.length }}</strong></div>
-      <div class="purchase-metric"><span>STOPPBAR</span><strong>{{ stoppableTasks.length }}</strong></div>
+      <div class="purchase-metric"><span>{{ 'STARTBEREIT' | t }}</span><strong>{{ startableTasks.length }}</strong></div>
+      <div class="purchase-metric"><span>{{ 'STOPPBAR' | t }}</span><strong>{{ stoppableTasks.length }}</strong></div>
     </div>
     <div class="runtime-command-actions">
       <button type="button" class="runtime-btn start-all" [disabled]="bulkStarting || !startableTasks.length" (click)="startAllTasks()">
@@ -77,14 +77,14 @@
   <div class="profile-browser-panel">
     <div class="profile-browser-head">
       <div>
-        <small>PROFILE BROWSER SESSIONS</small>
-        <strong>Persistente Browser pro ARES-Profil</strong>
-        <p>Cookies, Login und Browserzustand bleiben am Profil. Eine aktive Session belegt ihr Profil exklusiv und kann nicht parallel von einem zweiten Browser genutzt werden.</p>
+        <small>{{ 'PROFILE BROWSER SESSIONS' | t }}</small>
+        <strong>{{ 'Persistente Browser pro ARES-Profil' | t }}</strong>
+        <p>{{ 'Cookies, Login und Browserzustand bleiben am Profil. Eine aktive Session belegt ihr Profil exklusiv und kann nicht parallel von einem zweiten Browser genutzt werden.' | t }}</p>
       </div>
-      <div class="purchase-metric"><span>OFFEN</span><strong>{{ openProfileBrowserCount }}</strong></div>
+      <div class="purchase-metric"><span>{{ 'OFFEN' | t }}</span><strong>{{ openProfileBrowserCount }}</strong></div>
     </div>
 
-    <div class="profile-browser-empty" *ngIf="!profiles.length">Noch keine Profile gespeichert.</div>
+    <div class="profile-browser-empty" *ngIf="!profiles.length">{{ 'Noch keine Profile gespeichert.' | t }}</div>
     <div class="profile-browser-list" *ngIf="profiles.length">
       <div class="profile-browser-row" *ngFor="let profile of profiles" [class.open]="isProfileBrowserOpen(profile.id)">
         <div class="profile-browser-state"><span class="health-dot" [class.ready]="isProfileBrowserOpen(profile.id)"></span></div>
@@ -99,7 +99,7 @@
             *ngIf="!isProfileBrowserOpen(profile.id)"
             [disabled]="profileBrowserBusyIds.has(profile.id)"
             (click)="openProfileBrowser(profile)">
-            {{ profileBrowserBusyIds.has(profile.id) ? 'ÖFFNET…' : 'BROWSER ÖFFNEN' }}
+            {{ profileBrowserBusyIds.has(profile.id) ? ('OPENING…' | t) : ('OPEN BROWSER' | t) }}
           </button>
           <button
             type="button"
@@ -107,16 +107,14 @@
             *ngIf="isProfileBrowserOpen(profile.id)"
             [disabled]="profileBrowserBusyIds.has(profile.id)"
             (click)="closeProfileBrowser(profile)">
-            {{ profileBrowserBusyIds.has(profile.id) ? 'SCHLIESST…' : 'BROWSER SCHLIESSEN' }}
+            {{ profileBrowserBusyIds.has(profile.id) ? ('CLOSING…' | t) : ('CLOSE BROWSER' | t) }}
           </button>
           <button
             type="button"
             class="runtime-btn session-reset"
             [disabled]="profileBrowserBusyIds.has(profile.id)"
-            title="Löscht Browserdaten, Cookie-Snapshots und gespeicherten User-Agent dieses Profils"
-            (click)="resetProfileBrowserSession(profile)">
-            SESSION LÖSCHEN
-          </button>
+            [title]="'Löscht Browserdaten, Cookie-Snapshots und gespeicherten User-Agent dieses Profils' | t"
+            (click)="resetProfileBrowserSession(profile)">{{ 'SESSION LÖSCHEN' | t }}</button>
         </div>
       </div>
     </div>
@@ -126,19 +124,19 @@
     <article class="runtime-card watchdog-card">
       <div class="card-title-row">
         <div>
-          <small>WORKER WATCHDOG</small>
+          <small>{{ 'WORKER WATCHDOG' | t }}</small>
           <strong>{{ workers.length ? "AKTIV" : "BEREIT" }}</strong>
         </div>
         <span class="health-dot" [class.ready]="healthyWorkerCount === workers.length && workers.length > 0"></span>
       </div>
 
       <p>{{ watchdogLabel() }}</p>
-      <p>Automatische Worker-Recovery bei Heartbeat- oder RPC-Timeout.</p>
+      <p>{{ 'Automatische Worker-Recovery bei Heartbeat- oder RPC-Timeout.' | t }}</p>
 
       <div class="watchdog-metrics">
-        <div><span>Restarts</span><strong>{{ restartCount }}</strong></div>
-        <div><span>Worker</span><strong>{{ workers.length }}</strong></div>
-        <div><span>Aktive Tasks</span><strong>{{ activeWorkerTaskCount }}</strong></div>
+        <div><span>{{ 'Restarts' | t }}</span><strong>{{ restartCount }}</strong></div>
+        <div><span>{{ 'Worker' | t }}</span><strong>{{ workers.length }}</strong></div>
+        <div><span>{{ 'Aktive Tasks' | t }}</span><strong>{{ activeWorkerTaskCount }}</strong></div>
       </div>
 
       <div class="worker-list" *ngIf="workers.length">
@@ -154,63 +152,61 @@
       </div>
 
       <div class="runtime-warning" *ngIf="lastWorkerError">
-        Letzter Recovery-Grund: {{ lastWorkerError }}
+        {{ 'Last recovery reason' | t }}: {{ lastWorkerError }}
       </div>
     </article>
 
     <article class="runtime-card queue-overview" [class.active]="activeQueues.length">
       <div class="card-title-row">
         <div>
-          <small>QUEUE WATCH</small>
+          <small>{{ 'QUEUE WATCH' | t }}</small>
           <strong>{{ activeQueues.length ? activeQueues.length + " AKTIV" : "KEINE QUEUE" }}</strong>
         </div>
         <span class="queue-pulse" [class.active]="activeQueues.length"></span>
       </div>
 
-      <p *ngIf="!activeQueues.length">
-        Sobald eine Warteschlange erkannt wird, bleibt die Browser-Session verbunden und ARES wartet kontrolliert bis maximal 1 Stunde.
-      </p>
+      <p *ngIf="!activeQueues.length">{{ 'Sobald eine Warteschlange erkannt wird, bleibt die Browser-Session verbunden und ARES wartet kontrolliert bis maximal 1 Stunde.' | t }}</p>
 
       <div class="queue-list" *ngIf="activeQueues.length">
         <article class="queue-item" *ngFor="let task of activeQueues">
           <div class="queue-topline">
             <div>
               <strong>{{ task.config?.name || task.id }}</strong>
-              <small>{{ task.config?.shopId || "Shop unbekannt" }} · Quelle {{ getQueue(task)?.source || "auto" }}</small>
+              <small>{{ task.config?.shopId || ('shop unknown' | t) }} · {{ 'source' | t }} {{ getQueue(task)?.source || "auto" }}</small>
             </div>
-            <span class="queue-state">WAITING_QUEUE</span>
+            <span class="queue-state">{{ 'WAITING_QUEUE' | t }}</span>
           </div>
 
           <div class="queue-metrics">
             <div>
-              <span>POS</span>
+              <span>{{ 'POS' | t }}</span>
               <strong>{{ queuePosition(task) }}</strong>
-              <small>Queue-Position</small>
+              <small>{{ 'Queue-Position' | t }}</small>
             </div>
             <div>
-              <span>TTW</span>
+              <span>{{ 'TTW' | t }}</span>
               <strong>{{ queueWait(task) }}</strong>
-              <small>Restzeit</small>
+              <small>{{ 'Restzeit' | t }}</small>
             </div>
             <div>
-              <span>Gewartet</span>
+              <span>{{ 'Gewartet' | t }}</span>
               <strong>{{ queueElapsed(task) }}</strong>
             </div>
             <div>
-              <span>Maximum</span>
+              <span>{{ 'Maximum' | t }}</span>
               <strong>{{ queueMaximum(task) }}</strong>
             </div>
           </div>
 
-          <div class="queue-progress" aria-label="Queue-Wartefortschritt">
+          <div class="queue-progress" [attr.aria-label]="'Queue-Wartefortschritt' | t">
             <span [style.width.%]="queueProgress(task)"></span>
           </div>
 
           <p class="queue-status-text">{{ queueStatusText(task) }}</p>
 
           <div class="queue-actions">
-            <button type="button" class="runtime-btn warning" (click)="pauseTask(task.id)">Pause</button>
-            <button type="button" class="runtime-btn danger" (click)="stopTask(task.id)">Stop</button>
+            <button type="button" class="runtime-btn warning" (click)="pauseTask(task.id)">{{ 'Pause' | t }}</button>
+            <button type="button" class="runtime-btn danger" (click)="stopTask(task.id)">{{ 'Stop' | t }}</button>
           </div>
         </article>
       </div>

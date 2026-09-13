@@ -4,6 +4,7 @@ import type { CheckoutPaymentSession } from "../../payments/models";
 import type { AresProfile } from "../../profiles/models";
 import type { AresProxy, ProxySelection } from "../../proxies/models";
 import { ElectronService } from "../services/electron.service";
+import { I18nService } from "../i18n/i18n.service";
 
 type DropStrategy = "early-gate" | "product-monitor";
 type FeedbackKind = "info" | "success" | "error";
@@ -45,10 +46,10 @@ interface LocalFeedback {
 export class DropSetupsComponent implements OnInit, OnDestroy {
   readonly storageKey = "ares.dropSetups.v1";
   readonly steps = [
-    { number: 1, label: "Shop & Strategie" },
-    { number: 2, label: "Produkt & Keywords" },
-    { number: 3, label: "Profile & Proxys" },
-    { number: 4, label: "Speichern & Starten" }
+    { number: 1, label: this.i18n.t("Shop & Strategy") },
+    { number: 2, label: this.i18n.t("Product & Keywords") },
+    { number: 3, label: this.i18n.t("Profiles & Proxies") },
+    { number: 4, label: this.i18n.t("Save & Start") }
   ];
 
   shops: any[] = [];
@@ -73,7 +74,10 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
 
   private unsubscribeStatus?: () => void;
 
-  constructor(private readonly electron: ElectronService) {}
+  constructor(
+    private readonly electron: ElectronService,
+    readonly i18n: I18nService
+  ) {}
 
   async ngOnInit(): Promise<void> {
     this.loadStoredSetups();
@@ -216,7 +220,7 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     this.persistSetups();
     this.draft = this.cloneSetup(saved);
     this.editingSetupId = saved.id;
-    this.feedback = { kind: "success", text: `Drop Setup „${saved.name}“ gespeichert.` };
+    this.feedback = { kind: "success", text: this.i18n.t("Drop Setup „{name}“ gespeichert.", { name: saved.name }) };
     return saved;
   }
 
@@ -235,7 +239,7 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     }
 
     this.startingSetupId = setup.id;
-    this.feedback = { kind: "info", text: `${setup.assignments.length} Run(s) werden vorbereitet…` };
+    this.feedback = { kind: "info", text: this.i18n.t("{count} Run(s) werden vorbereitet…", { count: setup.assignments.length }) };
     let started = 0;
     let failure = "";
     const launchStamp = Date.now();
@@ -280,21 +284,21 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
           data
         });
         if (!created?.success) {
-          failure = created?.error || `${taskName} konnte nicht erstellt werden.`;
+          failure = created?.error || this.i18n.t("{name} konnte nicht erstellt werden.", { name: taskName });
           break;
         }
 
         if (this.sessionPaymentEnabled) {
           const payment = await this.electron.setPaymentSession(taskId, this.buildPaymentSession(assignment.profileId));
           if (!payment?.success) {
-            failure = payment?.error || `${taskName}: Zahlungs-Session konnte nicht gesetzt werden.`;
+            failure = payment?.error || this.i18n.t("{name}: Zahlungs-Session konnte nicht gesetzt werden.", { name: taskName });
             break;
           }
         }
 
         const start = await this.electron.startTask(taskId);
         if (!start?.success) {
-          failure = start?.error || `${taskName} konnte nicht gestartet werden.`;
+          failure = start?.error || this.i18n.t("{name} konnte nicht gestartet werden.", { name: taskName });
           break;
         }
         started += 1;
@@ -305,16 +309,18 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     }
 
     this.feedback = failure
-      ? { kind: "error", text: `${started}/${setup.assignments.length} Run(s) gestartet. ${failure}` }
-      : { kind: "success", text: `${started} Run(s) gestartet${setup.staggerMs ? ` · ${setup.staggerMs / 1_000}s Staffelung` : ""}.` };
+      ? { kind: "error", text: `${this.i18n.t("{started}/{total} Run(s) gestartet.", { started, total: setup.assignments.length })} ${failure}` }
+      : { kind: "success", text: setup.staggerMs
+          ? this.i18n.t("{started} Run(s) gestartet · {seconds}s Staffelung.", { started, seconds: setup.staggerMs / 1_000 })
+          : this.i18n.t("{started} Run(s) gestartet.", { started }) };
   }
 
   deleteSetup(setup: DropSetup): void {
-    if (!window.confirm(`Drop Setup „${setup.name}“ wirklich löschen? Bereits erstellte Runs bleiben erhalten.`)) return;
+    if (!window.confirm(this.i18n.t("Drop Setup „{name}“ wirklich löschen? Bereits erstellte Runs bleiben erhalten.", { name: setup.name }))) return;
     this.setups = this.setups.filter(item => item.id !== setup.id);
     this.persistSetups();
     if (this.expandedSetupId === setup.id) this.expandedSetupId = "";
-    this.feedback = { kind: "success", text: `Drop Setup „${setup.name}“ gelöscht.` };
+    this.feedback = { kind: "success", text: this.i18n.t("Drop Setup „{name}“ gelöscht.", { name: setup.name }) };
   }
 
   toggleSetup(setupId: string): void {
@@ -341,17 +347,17 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     const child = this.childFor(run);
     const target = child?.state === TaskState.POST_QUEUE_DISCOVERY ? child : run.state === TaskState.POST_QUEUE_DISCOVERY ? run : undefined;
     if (!target) {
-      this.feedback = { kind: "error", text: "Keywords sind nur während POST_QUEUE_DISCOVERY live änderbar." };
+      this.feedback = { kind: "error", text: this.i18n.t("Keywords sind nur während POST_QUEUE_DISCOVERY live änderbar.") };
       return;
     }
     const keywords = this.normalizeKeywords((this.keywordDrafts[run.id] || "").split(/[\n,]+/));
     const result = await this.electron.updateDiscoveryKeywords(target.id, keywords);
     if (!result?.success) {
-      this.feedback = { kind: "error", text: result?.error || "Keywords konnten nicht aktualisiert werden." };
+      this.feedback = { kind: "error", text: result?.error || this.i18n.t("Keywords konnten nicht aktualisiert werden.") };
       return;
     }
     this.keywordDrafts[run.id] = (result.keywords || keywords).join(", ");
-    this.feedback = { kind: "success", text: "Live-Keywords vom Browser-Run bestätigt." };
+    this.feedback = { kind: "success", text: this.i18n.t("Live-Keywords vom Browser-Run bestätigt.") };
     await this.loadTasks();
   }
 
@@ -359,8 +365,8 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     const target = this.childFor(run) || run;
     const result = await this.electron.pauseTask(target.id);
     this.feedback = result?.success
-      ? { kind: "success", text: "Run pausiert." }
-      : { kind: "error", text: result?.error || "Run konnte nicht pausiert werden." };
+      ? { kind: "success", text: this.i18n.t("Run pausiert.") }
+      : { kind: "error", text: result?.error || this.i18n.t("Run konnte nicht pausiert werden.") };
     await this.loadTasks();
   }
 
@@ -371,8 +377,8 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     const target = child || run;
     const result = await this.electron.stopTask(target.id);
     this.feedback = result?.success
-      ? { kind: "success", text: "Run gestoppt." }
-      : { kind: "error", text: result?.error || "Run konnte nicht gestoppt werden." };
+      ? { kind: "success", text: this.i18n.t("Run gestoppt.") }
+      : { kind: "error", text: result?.error || this.i18n.t("Run konnte nicht gestoppt werden.") };
     await this.loadTasks();
   }
 
@@ -395,14 +401,14 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     const child = this.childFor(run);
     const audit = child?.config?.data?.browserEnvironment || run?.config?.data?.browserEnvironment;
     const environment = audit?.status === "green"
-      ? " · Env GRÜN"
+      ? this.i18n.t(" · Env GREEN")
       : audit?.status === "warning"
-        ? " · Env WARNUNG"
+        ? this.i18n.t(" · Env WARNING")
         : "";
-    if (child) return `Browser läuft${environment}`;
-    if (run?.state === TaskState.FAILED) return `Fehler${environment}`;
-    if (run?.state === TaskState.CANCELLED) return `Gestoppt${environment}`;
-    return `Monitor aktiv${environment}`;
+    if (child) return this.i18n.t("Browser läuft{env}", { env: environment });
+    if (run?.state === TaskState.FAILED) return this.i18n.t("Fehler{env}", { env: environment });
+    if (run?.state === TaskState.CANCELLED) return this.i18n.t("Gestoppt{env}", { env: environment });
+    return this.i18n.t("Monitor aktiv{env}", { env: environment });
   }
 
   runProfileName(run: any): string {
@@ -417,35 +423,35 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
   }
 
   setupShopName(setup: DropSetup): string {
-    return this.shops.find(shop => shop.id === setup.shopId)?.name || setup.shopId || "Shop fehlt";
+    return this.shops.find(shop => shop.id === setup.shopId)?.name || setup.shopId || this.i18n.t("Shop fehlt");
   }
 
   setupReadiness(setup: DropSetup): string {
     const error = this.validateSetup(setup);
-    return error ? "Prüfen" : "Bereit";
+    return error ? this.i18n.t("Prüfen") : this.i18n.t("Bereit");
   }
 
   setupRunSummary(setup: DropSetup): string {
     const runs = this.setupRuns(setup.id);
-    if (!runs.length) return "Noch nicht gestartet";
+    if (!runs.length) return this.i18n.t("Noch nicht gestartet");
     const active = runs.filter(run => ![TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED].includes(run.state)).length;
-    return `${runs.length} Run(s) · ${active} aktiv`;
+    return this.i18n.t("{runs} Run(s) · {active} aktiv", { runs: runs.length, active });
   }
 
   profileName(profileId: string): string {
     const profile: any = this.profiles.find(item => item.id === profileId);
-    return profile?.name || profileId || "Profil fehlt";
+    return profile?.name || profileId || this.i18n.t("Profil fehlt");
   }
 
   profilePaymentLabel(profileId: string): string {
     const profile = this.profiles.find(item => item.id === profileId);
     const method = profile?.paymentPreference?.method ?? "card";
     const labels: Record<string, string> = {
-      card: "Karte · verschlüsselter Profile Vault",
+      card: this.i18n.t("Karte · verschlüsselter Profile Vault"),
       paypal: "PayPal",
       "shop-pay": "Shop Pay",
       klarna: "Klarna",
-      other: "Andere Zahlungsart"
+      other: this.i18n.t("Andere Zahlungsart")
     };
     const label = profile?.paymentPreference?.label?.trim();
     return label ? `${labels[method] ?? method} · ${label}` : (labels[method] ?? method);
@@ -453,17 +459,17 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
 
   profileProxyName(profileId: string): string {
     const profile: any = this.profiles.find(item => item.id === profileId);
-    if (!profile?.preferredProxyId) return "Direkt / kein Standardproxy";
+    if (!profile?.preferredProxyId) return this.i18n.t("Direkt / kein Standardproxy");
     return this.proxies.find(proxy => proxy.id === profile.preferredProxyId)?.name || profile.preferredProxyId;
   }
 
   proxyName(proxyId: string): string {
-    return this.proxies.find(proxy => proxy.id === proxyId)?.name || proxyId || "Proxy fehlt";
+    return this.proxies.find(proxy => proxy.id === proxyId)?.name || proxyId || this.i18n.t("Proxy fehlt");
   }
 
   proxyLabel(selection: ProxySelection | undefined, profileId: string): string {
-    if (!selection || selection.mode === "profile-default") return `Profilstandard · ${this.profileProxyName(profileId)}`;
-    if (selection.mode === "direct") return "Direkt";
+    if (!selection || selection.mode === "profile-default") return this.i18n.t("Profilstandard · {name}", { name: this.profileProxyName(profileId) });
+    if (selection.mode === "direct") return this.i18n.t("Direkt");
     return this.proxyName(selection.proxyId || "");
   }
 
@@ -494,7 +500,7 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
 
   formatLogTime(value: string | Date): string {
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? "–" : date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    return Number.isNaN(date.getTime()) ? "–" : date.toLocaleTimeString(this.i18n.language === "de" ? "de-DE" : "en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   }
 
   trackSetup(_index: number, setup: DropSetup): string {
@@ -532,19 +538,19 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
 
   private validateStep(step: number): string {
     if (step === 1) {
-      if (!this.draft.name.trim()) return "Bitte einen Namen für das Drop Setup vergeben.";
-      if (!this.draft.shopId) return "Bitte einen Shop auswählen.";
+      if (!this.draft.name.trim()) return this.i18n.t("Bitte einen Namen für das Drop Setup vergeben.");
+      if (!this.draft.shopId) return this.i18n.t("Bitte einen Shop auswählen.");
     }
     if (step === 2) {
-      if (this.draft.strategy === "early-gate" && !this.draft.productName.trim()) return "Für Early Gate ist ein Produktname erforderlich.";
-      if (this.draft.strategy === "product-monitor" && !this.draft.searchTerm.trim()) return "Für den Produktmonitor ist ein Suchbegriff oder eine Produkt-URL erforderlich.";
+      if (this.draft.strategy === "early-gate" && !this.draft.productName.trim()) return this.i18n.t("Für Early Gate ist ein Produktname erforderlich.");
+      if (this.draft.strategy === "product-monitor" && !this.draft.searchTerm.trim()) return this.i18n.t("Für den Produktmonitor ist ein Suchbegriff oder eine Produkt-URL erforderlich.");
     }
     if (step === 3) {
-      if (!this.draft.assignments.length) return "Bitte mindestens ein Profil auswählen.";
+      if (!this.draft.assignments.length) return this.i18n.t("Bitte mindestens ein Profil auswählen.");
       const missingProfile = this.draft.assignments.find(item => !this.profiles.some(profile => profile.id === item.profileId));
-      if (missingProfile) return "Mindestens ein zugeordnetes Profil existiert nicht mehr.";
+      if (missingProfile) return this.i18n.t("Mindestens ein zugeordnetes Profil existiert nicht mehr.");
       const missingProxy = this.draft.assignments.find(item => item.proxySelection.mode === "proxy" && !this.proxies.some(proxy => proxy.id === item.proxySelection.proxyId));
-      if (missingProxy) return `Für ${this.profileName(missingProxy.profileId)} fehlt der ausgewählte Proxy.`;
+      if (missingProxy) return this.i18n.t("Für {name} fehlt der ausgewählte Proxy.", { name: this.profileName(missingProxy.profileId) });
     }
     return "";
   }
@@ -593,7 +599,7 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
         : [];
     } catch {
       this.setups = [];
-      this.feedback = { kind: "error", text: "Gespeicherte Drop Setups konnten nicht gelesen werden. Es wurden keine Zahlungsdaten geladen oder gespeichert." };
+      this.feedback = { kind: "error", text: this.i18n.t("Gespeicherte Drop Setups konnten nicht gelesen werden. Es wurden keine Zahlungsdaten geladen oder gespeichert.") };
     }
   }
 
@@ -605,7 +611,7 @@ export class DropSetupsComponent implements OnInit, OnDestroy {
     return {
       version: 1,
       id: String(value.id),
-      name: String(value.name || "Drop Setup"),
+      name: String(value.name || this.i18n.t("Drop Setup")),
       shopId: String(value.shopId || ""),
       strategy: value.strategy === "product-monitor" ? "product-monitor" : "early-gate",
       productName: String(value.productName || ""),

@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit } from "@angular/core";
 import { ElectronService } from "./services/electron.service";
 import { ProfileBrowserService, type ProfileBrowserStatusView, type SeleniumBaseProfileBrowserStatusView } from "./services/profile-browser.service";
+import { I18nService, type Language } from "./i18n/i18n.service";
 import { TaskState } from "../models";
 import { COMMERCE_PLATFORMS, CommercePlatform } from "../commerce/platforms";
 import type { CheckoutPaymentSession, PaymentMethod } from "../payments/models";
@@ -313,23 +314,38 @@ export class AppComponent implements OnInit, OnDestroy {
 
   constructor(
     private readonly electron: ElectronService,
-    private readonly profileBrowser: ProfileBrowserService
+    private readonly profileBrowser: ProfileBrowserService,
+    readonly i18n: I18nService
   ) {}
+
+  setLanguage(language: Language): void {
+    this.i18n.setLanguage(language);
+  }
 
   async ngOnInit(): Promise<void> {
     this.loadUiSettings();
     this.activeTab = this.uiSettings.defaultStartTab;
-    await Promise.all([
+    const bootStartedAt = Date.now();
+    const initialLoad = Promise.all([
       this.loadShops(),
       this.loadProfiles(),
       this.loadProxies(),
       this.loadTasks(),
       this.loadSystemStatus(),
-      this.loadCaptchaProviders(),
-      this.loadVisionStatus()
+      this.loadCaptchaProviders()
     ]);
+    void this.loadVisionStatus();
 
+    await initialLoad;
     this.syncProfileDefaults();
+
+    if (this.uiSettings.reduceMotion) {
+      this.dismissBootSplash();
+    } else {
+      const elapsed = Date.now() - bootStartedAt;
+      window.setTimeout(() => this.dismissBootSplash(), Math.max(0, 450 - elapsed));
+    }
+
     this.unsubscribeStatus = this.electron.onTaskStatusUpdate(() => {
       this.scheduleTaskViewRefresh();
     });
@@ -476,7 +492,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const text = JSON.stringify(snapshot, null, 2);
     try {
       await navigator.clipboard?.writeText(text);
-      this.settingsMessage = "Diagnostics snapshot kopiert.";
+      this.settingsMessage = this.i18n.t("Diagnostics snapshot kopiert.");
     } catch {
       this.settingsMessage = text;
     }
@@ -528,16 +544,16 @@ export class AppComponent implements OnInit, OnDestroy {
 
   getModuleStatusLabel(module: ModuleView): string {
     const level = this.getModuleStatusLevel(module);
-    if (level === "ready") return "Ready";
-    if (level === "partial") return "Partial";
-    return "Planned";
+    if (level === "ready") return this.i18n.t("Ready");
+    if (level === "partial") return this.i18n.t("Partial");
+    return this.i18n.t("Planned");
   }
 
   getModuleStatusNote(module: ModuleView): string {
     const level = this.getModuleStatusLevel(module);
-    if (level === "ready") return "All exposed capabilities ready";
-    if (level === "partial") return "Some capabilities not exposed";
-    return "Not exposed";
+    if (level === "ready") return this.i18n.t("All exposed capabilities ready");
+    if (level === "partial") return this.i18n.t("Some capabilities not exposed");
+    return this.i18n.t("Not exposed");
   }
 
   getModuleShopCount(module: ModuleView): number {
@@ -610,14 +626,14 @@ export class AppComponent implements OnInit, OnDestroy {
 
   getProfileBrowserStatusText(profileId: string): string {
     const status = this.profileBrowserStatuses[profileId];
-    if (!status?.open) return "geschlossen";
-    return status.pid ? `offen · PID ${status.pid}` : "offen";
+    if (!status?.open) return this.i18n.t("geschlossen");
+    return status.pid ? this.i18n.t("offen · PID {pid}", { pid: status.pid }) : this.i18n.t("offen");
   }
 
   getSeleniumBaseBrowserStatusText(profileId: string): string {
     const status = this.seleniumBaseBrowserStatuses[profileId];
-    if (!status?.open) return "geschlossen";
-    return status.pid ? `offen · PID ${status.pid}` : "offen";
+    if (!status?.open) return this.i18n.t("geschlossen");
+    return status.pid ? this.i18n.t("offen · PID {pid}", { pid: status.pid }) : this.i18n.t("offen");
   }
 
   async openManualProfileBrowser(profile: ProfileView): Promise<void> {
@@ -628,11 +644,11 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.open(profileId, this.settingsStartUrls[profileId]?.trim() || undefined);
       if (!result?.success) {
-        this.settingsMessage = result?.error || "Profilbrowser konnte nicht geöffnet werden.";
+        this.settingsMessage = result?.error || this.i18n.t("Profilbrowser konnte nicht geöffnet werden.");
         return;
       }
       this.profileBrowserStatuses[profileId] = result.status;
-      this.settingsMessage = `${profile.name || profileId}: Profilbrowser geöffnet.`;
+      this.settingsMessage = this.i18n.t("{name}: profile browser opened.", { name: profile.name || profileId });
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
     }
@@ -646,11 +662,11 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.close(profileId);
       if (!result?.success) {
-        this.settingsMessage = result?.error || "Profilbrowser konnte nicht geschlossen werden.";
+        this.settingsMessage = result?.error || this.i18n.t("Profilbrowser konnte nicht geschlossen werden.");
         return;
       }
       this.profileBrowserStatuses[profileId] = result.status;
-      this.settingsMessage = `${profile.name || profileId}: Profilbrowser geschlossen.`;
+      this.settingsMessage = this.i18n.t("{name}: profile browser closed.", { name: profile.name || profileId });
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
     }
@@ -664,11 +680,11 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.openSeleniumBase(profileId, this.settingsStartUrls[profileId]?.trim() || undefined);
       if (!result?.success) {
-        this.settingsMessage = result?.error || "SeleniumBase-CDP konnte nicht geöffnet werden.";
+        this.settingsMessage = result?.error || this.i18n.t("SeleniumBase-CDP konnte nicht geöffnet werden.");
         return;
       }
       this.seleniumBaseBrowserStatuses[profileId] = result.status;
-      this.settingsMessage = `${profile.name || profileId}: SeleniumBase-CDP geöffnet.`;
+      this.settingsMessage = this.i18n.t("{name}: SeleniumBase CDP opened.", { name: profile.name || profileId });
     } finally {
       this.seleniumBaseBrowserBusyIds.delete(profileId);
     }
@@ -682,11 +698,11 @@ export class AppComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.closeSeleniumBase(profileId);
       if (!result?.success) {
-        this.settingsMessage = result?.error || "SeleniumBase-CDP konnte nicht geschlossen werden.";
+        this.settingsMessage = result?.error || this.i18n.t("SeleniumBase-CDP konnte nicht geschlossen werden.");
         return;
       }
       this.seleniumBaseBrowserStatuses[profileId] = result.status;
-      this.settingsMessage = `${profile.name || profileId}: SeleniumBase-CDP geschlossen.`;
+      this.settingsMessage = this.i18n.t("{name}: SeleniumBase CDP closed.", { name: profile.name || profileId });
     } finally {
       this.seleniumBaseBrowserBusyIds.delete(profileId);
     }
@@ -696,7 +712,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const profileId = String(profile.id ?? "").trim();
     if (!profileId || this.profileBrowserBusyIds.has(profileId)) return;
     const confirmed = !this.uiSettings.confirmDestructive || typeof window === "undefined" || window.confirm(
-      `Browser-Session für ${profile.name || profileId} löschen?\n\nCookies, Storage, Cache, Cookie-Snapshots und gespeicherter User-Agent werden entfernt.`
+      this.i18n.t("Browser-Session für {name} löschen?\n\nCookies, Storage, Cache, Cookie-Snapshots und gespeicherter User-Agent werden entfernt.", { name: profile.name || profileId })
     );
     if (!confirmed) return;
 
@@ -706,17 +722,17 @@ export class AppComponent implements OnInit, OnDestroy {
       const persisted = toPersistedAresProfile(profile);
       const saveResult = await this.electron.saveProfile(clearProfileBrowserUserAgent(persisted));
       if (!saveResult?.success) {
-        this.settingsMessage = saveResult?.error || "User-Agent konnte vor dem Reset nicht zurückgesetzt werden.";
+        this.settingsMessage = saveResult?.error || this.i18n.t("User-Agent konnte vor dem Reset nicht zurückgesetzt werden.");
         return;
       }
       const result = await this.profileBrowser.resetSession(profileId);
       if (!result?.success) {
-        this.settingsMessage = result?.error || "Browser-Session konnte nicht gelöscht werden.";
+        this.settingsMessage = result?.error || this.i18n.t("Browser-Session konnte nicht gelöscht werden.");
         return;
       }
       this.profileBrowserStatuses[profileId] = result.status;
       this.seleniumBaseBrowserStatuses[profileId] = result.status;
-      this.settingsMessage = `${profile.name || profileId}: Browser-Session gelöscht.`;
+      this.settingsMessage = this.i18n.t("{name}: browser session deleted.", { name: profile.name || profileId });
       await this.loadProfiles();
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
@@ -756,7 +772,7 @@ export class AppComponent implements OnInit, OnDestroy {
     } else {
       this.captchaProviderApiAvailable = false;
       this.captchaProviders = this.fallbackCaptchaProviders.map(provider => ({ ...provider }));
-      this.captchaModeNotice = result?.error || "Captcha-Provider konnten nicht vom Backend geladen werden.";
+      this.captchaModeNotice = result?.error || this.i18n.t("Captcha-Provider konnten nicht vom Backend geladen werden.");
     }
     const mode = await api.getCaptchaMode?.().catch(() => undefined);
     if (mode?.success) this.captchaMode = mode.mode;
@@ -767,11 +783,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.captchaModeNotice = "";
     const configuredApiProviders = this.captchaProviders.filter(provider => provider.configured);
     if (mode === "api" && !configuredApiProviders.length) {
-      this.captchaModeNotice = "Nur API ist ausgewählt, aber es ist noch kein Captcha-API-Key hinterlegt. Anbieter unten hinzufügen und speichern.";
+      this.captchaModeNotice = this.i18n.t("Nur API ist ausgewählt, aber es ist noch kein Captcha-API-Key hinterlegt. Anbieter unten hinzufügen und speichern.");
     } else if (mode === "siglip-api" && !configuredApiProviders.length) {
-      this.captchaModeNotice = "SigLIP ist aktiv. API-Fallback startet erst, wenn ein Anbieter-Key gespeichert ist.";
+      this.captchaModeNotice = this.i18n.t("SigLIP ist aktiv. API-Fallback startet erst, wenn ein Anbieter-Key gespeichert ist.");
     } else if (mode === "siglip") {
-      this.captchaModeNotice = "Nur lokales SigLIP ist aktiv. Externe API-Anbieter werden übersprungen.";
+      this.captchaModeNotice = this.i18n.t("Nur lokales SigLIP ist aktiv. Externe API-Anbieter werden übersprungen.");
     }
 
     const api = (window as any).ares;
@@ -781,24 +797,24 @@ export class AppComponent implements OnInit, OnDestroy {
       this.captchaMode = result.mode;
       return;
     }
-    this.captchaModeNotice = result?.error || this.captchaModeNotice || "Captcha-Modus konnte nicht gespeichert werden.";
+    this.captchaModeNotice = result?.error || this.captchaModeNotice || this.i18n.t("Captcha-Modus konnte nicht gespeichert werden.");
   }
 
   async saveCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
     if (!api?.saveCaptchaProvider) {
-      this.captchaStatus[id] = "Speichern ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      this.captchaStatus[id] = this.i18n.t("Speichern ist nur in der Electron-App mit Preload/IPC verfügbar.");
       return;
     }
     this.captchaBusy = true;
     try {
       const result = await api.saveCaptchaProvider(id, { apiKey: this.captchaKeyDrafts[id] || "", enabled: true });
       if (!result?.success) {
-        this.captchaStatus[id] = result?.error || "Speichern fehlgeschlagen.";
+        this.captchaStatus[id] = result?.error || this.i18n.t("Speichern fehlgeschlagen.");
         return;
       }
       this.captchaKeyDrafts[id] = "";
-      this.captchaStatus[id] = "Gespeichert.";
+      this.captchaStatus[id] = this.i18n.t("Gespeichert.");
       await this.loadCaptchaProviders();
     } finally {
       this.captchaBusy = false;
@@ -808,13 +824,13 @@ export class AppComponent implements OnInit, OnDestroy {
   async deleteCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
     if (!api?.deleteCaptchaProvider) {
-      this.captchaStatus[id] = "Entfernen ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      this.captchaStatus[id] = this.i18n.t("Entfernen ist nur in der Electron-App mit Preload/IPC verfügbar.");
       return;
     }
     this.captchaBusy = true;
     try {
       await api.deleteCaptchaProvider(id);
-      this.captchaStatus[id] = "Entfernt.";
+      this.captchaStatus[id] = this.i18n.t("Entfernt.");
       await this.loadCaptchaProviders();
     } finally {
       this.captchaBusy = false;
@@ -824,39 +840,43 @@ export class AppComponent implements OnInit, OnDestroy {
   async testCaptchaProvider(id: string): Promise<void> {
     const api = (window as any).ares;
     if (!api?.testCaptchaProvider) {
-      this.captchaStatus[id] = "Test ist nur in der Electron-App mit Preload/IPC verfügbar.";
+      this.captchaStatus[id] = this.i18n.t("Test ist nur in der Electron-App mit Preload/IPC verfügbar.");
       return;
     }
     this.captchaBusy = true;
-    this.captchaStatus[id] = "Teste…";
+    this.captchaStatus[id] = this.i18n.t("Teste…");
     try {
       const result = await api.testCaptchaProvider(id).catch(() => undefined);
       if (!result) {
-        this.captchaStatus[id] = "Test fehlgeschlagen.";
+        this.captchaStatus[id] = this.i18n.t("Test fehlgeschlagen.");
         return;
       }
       if (!result.success) {
-        this.captchaStatus[id] = result.error || "Test fehlgeschlagen.";
+        this.captchaStatus[id] = result.error || this.i18n.t("Test fehlgeschlagen.");
         return;
       }
       this.captchaStatus[id] = result.valid
-        ? `Gültig${result.balance !== undefined ? ` · Guthaben: ${result.balance}` : ""}`
-        : `Abgelehnt${result.error ? ` (${result.error})` : ""}`;
+        ? (result.balance !== undefined
+            ? this.i18n.t("Gültig · Guthaben: {balance}", { balance: result.balance })
+            : this.i18n.t("Gültig"))
+        : (result.error
+            ? this.i18n.t("Abgelehnt ({error})", { error: result.error })
+            : this.i18n.t("Abgelehnt"));
     } finally {
       this.captchaBusy = false;
     }
   }
 
   isCaptchaStatusSuccess(value?: string): boolean {
-    return /gespeichert|entfernt|gültig/i.test(value || "");
+    return /gespeichert|entfernt|gültig|saved|removed|valid/i.test(value || "");
   }
 
   isCaptchaStatusWarning(value?: string): boolean {
-    return /electron-app|preload|ipc|teste|nicht verfügbar/i.test(value || "");
+    return /electron-app|preload|ipc|teste|testing|nicht verfügbar|not available/i.test(value || "");
   }
 
   isCaptchaStatusError(value?: string): boolean {
-    return /fehlgeschlagen|abgelehnt|fehler|error/i.test(value || "");
+    return /fehlgeschlagen|abgelehnt|fehler|error|failed|rejected/i.test(value || "");
   }
 
   async loadVisionStatus(): Promise<void> {
@@ -865,8 +885,8 @@ export class AppComponent implements OnInit, OnDestroy {
       error: error instanceof Error ? error.message : String(error)
     }));
     if (!result?.success) {
-      this.visionStatus = { ready: false, error: result?.error || "Status nicht verfügbar." };
-      this.visionStatusText = this.visionStatus.error || "Status nicht verfügbar.";
+      this.visionStatus = { ready: false, error: result?.error || this.i18n.t("Status nicht verfügbar.") };
+      this.visionStatusText = this.visionStatus.error || this.i18n.t("Status nicht verfügbar.");
       return;
     }
     this.visionStatus = result.status ?? {};
@@ -878,12 +898,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.visionBusy = true;
     this.error = "";
     this.info = "";
-    this.visionStatusText = "SigLIP2 wird lokal vorbereitet…";
+    this.visionStatusText = this.i18n.t("SigLIP2 wird lokal vorbereitet…");
     try {
       const result = await this.electron.prepareSeleniumBaseVision();
       if (!result?.success) {
-        this.visionStatus = { ready: false, error: result?.error || "Vorbereitung fehlgeschlagen." };
-        this.visionStatusText = this.visionStatus.error || "Vorbereitung fehlgeschlagen.";
+        this.visionStatus = { ready: false, error: result?.error || this.i18n.t("Vorbereitung fehlgeschlagen.") };
+        this.visionStatusText = this.visionStatus.error || this.i18n.t("Vorbereitung fehlgeschlagen.");
         this.error = this.visionStatusText;
         return;
       }
@@ -891,8 +911,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.visionStatus = status;
       this.visionStatusText = this.getVisionStatusLabel();
       this.info = status.ready
-        ? "SigLIP2 ist lokal vorbereitet."
-        : status.error || "SigLIP2 ist noch nicht bereit.";
+        ? this.i18n.t("SigLIP2 ist lokal vorbereitet.")
+        : status.error || this.i18n.t("SigLIP2 ist noch nicht bereit.");
     } finally {
       this.visionBusy = false;
     }
@@ -1041,13 +1061,13 @@ export class AppComponent implements OnInit, OnDestroy {
       (!profile.billingSameAsShipping && !isCompleteCheckoutAddress(profile.billingAddress))
     ) {
       this.error = profile.billingSameAsShipping
-        ? "Bitte Profilname, Kontakt und Lieferadresse vollständig ausfüllen."
-        : "Bitte Profilname, Kontakt, Lieferadresse und separate Rechnungsadresse vollständig ausfüllen.";
+        ? this.i18n.t("Bitte Profilname, Kontakt und Lieferadresse vollständig ausfüllen.")
+        : this.i18n.t("Bitte Profilname, Kontakt, Lieferadresse und separate Rechnungsadresse vollständig ausfüllen.");
       return;
     }
 
     if (profile.preferredProxyId && !this.proxies.some(proxy => proxy.id === profile.preferredProxyId)) {
-      this.error = "Der ausgewählte Standard-Proxy existiert nicht mehr.";
+      this.error = this.i18n.t("Der ausgewählte Standard-Proxy existiert nicht mehr.");
       return;
     }
 
@@ -1059,7 +1079,7 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    this.info = "Profil gespeichert.";
+    this.info = this.i18n.t("Profil gespeichert.");
     this.newProfile = toProfileV2Draft(persistedProfile);
     await this.loadProfiles();
   }
@@ -1067,20 +1087,20 @@ export class AppComponent implements OnInit, OnDestroy {
   editProfile(profile: ProfileView): void {
     this.newProfile = toProfileV2Draft(toPersistedAresProfile(profile));
     this.profileTab = "identity";
-    this.info = `Profil ${profile.name} geladen.`;
+    this.info = this.i18n.t("Profil {name} geladen.", { name: profile.name });
   }
 
   async deleteProfile(profile: ProfileView, event?: Event): Promise<void> {
     if (event) event.stopPropagation();
     this.error = "";
     this.info = "";
-    if (this.uiSettings.confirmDestructive && !window.confirm(`Profil „${profile.name}" wirklich löschen? Browserdaten und Cookie-Snapshots werden ebenfalls entfernt.`)) return;
+    if (this.uiSettings.confirmDestructive && !window.confirm(this.i18n.t("Profil „{name}“ wirklich löschen? Browserdaten und Cookie-Snapshots werden ebenfalls entfernt.", { name: profile.name }))) return;
     const result = await this.electron.deleteProfile(profile.id);
     if (!result.success) {
       this.error = result.error;
       return;
     }
-    this.info = `Profil „${profile.name}" gelöscht.`;
+    this.info = this.i18n.t("Profil „{name}“ gelöscht.", { name: profile.name });
     if (this.selectedProfileId === profile.id) this.selectedProfileId = "";
     await this.loadProfiles();
   }
@@ -1095,12 +1115,12 @@ export class AppComponent implements OnInit, OnDestroy {
     this.info = "";
     const proxy = this.newProxy;
     if (!proxy.id.trim() || !proxy.name.trim() || !proxy.host.trim()) {
-      this.error = "Proxy-ID, Name und Host sind erforderlich.";
+      this.error = this.i18n.t("Proxy-ID, Name und Host sind erforderlich.");
       return;
     }
     const port = Number(proxy.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      this.error = "Proxy-Port muss zwischen 1 und 65535 liegen.";
+      this.error = this.i18n.t("Proxy-Port muss zwischen 1 und 65535 liegen.");
       return;
     }
 
@@ -1117,7 +1137,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.error = result.error;
       return;
     }
-    this.info = `Proxy ${result.proxy?.name || proxy.name} gespeichert.`;
+    this.info = this.i18n.t("Proxy {name} gespeichert.", { name: result.proxy?.name || proxy.name });
     this.newProxy = this.emptyProxy();
     await Promise.all([this.loadProxies(), this.loadSystemStatus()]);
   }
@@ -1135,7 +1155,7 @@ export class AppComponent implements OnInit, OnDestroy {
         const fingerprint = this.proxyFingerprint(parsed.proxy);
         const duplicate = existing.has(fingerprint) || seen.has(fingerprint);
         seen.add(fingerprint);
-        return duplicate ? { ...parsed, duplicate: true, error: "Duplikat" } : parsed;
+        return duplicate ? { ...parsed, duplicate: true, error: this.i18n.t("Duplikat") } : parsed;
       });
   }
 
@@ -1143,20 +1163,20 @@ export class AppComponent implements OnInit, OnDestroy {
     this.updateProxyImportPreview();
     const validRows = this.proxyImportPreview.filter(row => row.valid && row.proxy && !row.duplicate);
     if (!validRows.length || this.proxyImportSaving) {
-      this.error = "Keine gültigen neuen Proxies zum Importieren.";
+      this.error = this.i18n.t("Keine gültigen neuen Proxies zum Importieren.");
       return;
     }
 
     this.proxyImportSaving = true;
     this.error = "";
-    this.info = `Importiere ${validRows.length} Proxy(s)…`;
+    this.info = this.i18n.t("Importiere {count} Proxy(s)…", { count: validRows.length });
     let saved = 0;
     const failures: string[] = [];
     try {
       for (const row of validRows) {
         const result = await this.electron.saveProxy(row.proxy);
         if (result?.success) saved += 1;
-        else failures.push(`${row.line}: ${result?.error || "Speichern fehlgeschlagen"}`);
+        else failures.push(this.i18n.t("{line}: {error}", { line: row.line, error: result?.error || this.i18n.t("Speichern fehlgeschlagen") }));
       }
     } finally {
       this.proxyImportSaving = false;
@@ -1167,8 +1187,8 @@ export class AppComponent implements OnInit, OnDestroy {
       this.error = failures.slice(0, 3).join(" · ");
     }
     this.info = failures.length
-      ? `${saved}/${validRows.length} Proxies importiert · ${failures.length} Fehler.`
-      : `${saved} Proxies importiert.`;
+      ? this.i18n.t("{saved}/{total} Proxies importiert · {errors} Fehler.", { saved, total: validRows.length, errors: failures.length })
+      : this.i18n.t("{saved} Proxies importiert.", { saved });
     if (!failures.length) this.proxyImportDraft = "";
     this.updateProxyImportPreview();
   }
@@ -1194,11 +1214,11 @@ export class AppComponent implements OnInit, OnDestroy {
       const result = await this.electron.testProxy(proxy.id);
       await this.loadProxies();
       if (!result.success) {
-        this.error = result.error || `Proxy ${proxy.name} ist nicht erreichbar.`;
+        this.error = result.error || this.i18n.t("Proxy {name} ist nicht erreichbar.", { name: proxy.name });
         return;
       }
       const latency = result.health?.latencyMs;
-      this.info = `${proxy.name}: online${typeof latency === "number" ? ` · ${latency} ms` : ""}.`;
+      this.info = this.i18n.t("Proxy {name}: online{latency}.", { name: proxy.name, latency: typeof latency === "number" ? ` · ${latency} ms` : "" });
     } finally {
       this.testingProxyIds.delete(proxy.id);
     }
@@ -1213,11 +1233,11 @@ export class AppComponent implements OnInit, OnDestroy {
       const result = await this.electron.testAllProxies();
       await this.loadProxies();
       if (!result.success) {
-        this.error = result.error || "Proxy-Checks konnten nicht abgeschlossen werden.";
+        this.error = result.error || this.i18n.t("Proxy-Checks konnten nicht abgeschlossen werden.");
         return;
       }
       const online = Array.isArray(result.results) ? result.results.filter((item: any) => item.success).length : 0;
-      this.info = `Proxy-Checks abgeschlossen · ${online}/${this.proxies.length} online.`;
+      this.info = this.i18n.t("Proxy-Checks abgeschlossen · {online}/{total} online.", { online, total: this.proxies.length });
     } finally {
       this.testingAllProxies = false;
     }
@@ -1229,14 +1249,14 @@ export class AppComponent implements OnInit, OnDestroy {
 
   getProxyLocation(proxy: AresProxy): string {
     const geo = proxy.health?.geo;
-    if (!geo) return "Ort unbekannt";
-    return [geo.city, geo.region, geo.countryCode || geo.country].filter(Boolean).join(" · ") || "Ort unbekannt";
+    if (!geo) return this.i18n.t("Ort unbekannt");
+    return [geo.city, geo.region, geo.countryCode || geo.country].filter(Boolean).join(" · ") || this.i18n.t("Ort unbekannt");
   }
 
   getProxyNetwork(proxy: AresProxy): string {
     const geo = proxy.health?.geo;
-    if (!geo) return "ASN / Provider unbekannt";
-    return [geo.asn, geo.provider].filter(Boolean).join(" · ") || "ASN / Provider unbekannt";
+    if (!geo) return this.i18n.t("ASN / Provider unbekannt");
+    return [geo.asn, geo.provider].filter(Boolean).join(" · ") || this.i18n.t("ASN / Provider unbekannt");
   }
 
   getProxyRiskLabel(proxy: AresProxy): string {
@@ -1253,15 +1273,15 @@ export class AppComponent implements OnInit, OnDestroy {
 
   getProxyCheckLabel(proxy: AresProxy): string {
     const health = proxy.health;
-    if (!health) return "Noch nicht getestet";
+    if (!health) return this.i18n.t("Noch nicht getestet");
     const time = new Date(health.checkedAt);
     const formatted = Number.isNaN(time.getTime()) ? health.checkedAt : time.toLocaleString("de-DE");
-    return `Letzter Check ${formatted}`;
+    return this.i18n.t("Letzter Check {time}", { time: formatted });
   }
 
   editProxy(proxy: AresProxy): void {
     this.newProxy = { ...proxy };
-    this.info = `Proxy ${proxy.name} geladen.`;
+    this.info = this.i18n.t("Proxy {name} geladen.", { name: proxy.name });
   }
 
   async deleteProxy(proxyId: string): Promise<void> {
@@ -1269,11 +1289,11 @@ export class AppComponent implements OnInit, OnDestroy {
     this.info = "";
     const result = await this.electron.deleteProxy(proxyId);
     if (!result.success) {
-      this.error = result.error || "Proxy konnte nicht gelöscht werden.";
+      this.error = result.error || this.i18n.t("Proxy konnte nicht gelöscht werden.");
       return;
     }
     if (this.newProxy.id === proxyId) this.newProxy = this.emptyProxy();
-    this.info = "Proxy gelöscht.";
+    this.info = this.i18n.t("Proxy gelöscht.");
     await Promise.all([this.loadProxies(), this.loadSystemStatus()]);
   }
 
@@ -1295,7 +1315,7 @@ export class AppComponent implements OnInit, OnDestroy {
   async loadTaskLogs(taskId: string): Promise<void> {
     const result = await this.electron.getTaskLogs(taskId, 100);
     if (result.success) this.taskLogs[taskId] = result.logs;
-    else this.error = result.error || "Task-Verlauf konnte nicht geladen werden.";
+    else this.error = result.error || this.i18n.t("Task-Verlauf konnte nicht geladen werden.");
   }
 
   async toggleTaskLogs(taskId: string): Promise<void> {
@@ -1324,12 +1344,12 @@ export class AppComponent implements OnInit, OnDestroy {
       const allowed = this.system.allowFinalPurchase !== true;
       const result = await this.electron.setFinalPurchaseAllowed(allowed);
       if (!result?.success) {
-        this.error = result?.error || "Kauf-Freigabe wurde vom Backend abgelehnt.";
+        this.error = result?.error || this.i18n.t("Kauf-Freigabe wurde vom Backend abgelehnt.");
         return;
       }
       this.info = result.allowFinalPurchase
-        ? "Auto-Kauf freigegeben. Checkout läuft bis zum finalen Submit."
-        : "Auto-Kauf gesperrt. Checkout stoppt vor dem finalen Submit.";
+        ? this.i18n.t("Auto-Kauf freigegeben. Checkout läuft bis zum finalen Submit.")
+        : this.i18n.t("Auto-Kauf gesperrt. Checkout stoppt vor dem finalen Submit.");
       await this.loadSystemStatus();
     } finally {
       this.purchaseChanging = false;
@@ -1343,7 +1363,7 @@ export class AppComponent implements OnInit, OnDestroy {
     const baseUrl = this.newShop.baseUrl.trim();
     const platform = this.newShop.platform;
     if (!id || !baseUrl) {
-      this.error = "Shop-ID und Shop-URL sind erforderlich.";
+      this.error = this.i18n.t("Shop-ID und Shop-URL sind erforderlich.");
       return;
     }
 
@@ -1360,8 +1380,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     this.info = result.executorReady
-      ? `${this.getPlatformLabel(platform)} Shop registriert · Monitoring + Checkout-Executor bereit.`
-      : `${this.getPlatformLabel(platform)} Shop registriert · Monitoring verfügbar${result.earlyGateReady ? " · Early Gate bereit" : ""}.`;
+      ? this.i18n.t("{platform} Shop registriert · Monitoring + Checkout-Executor bereit.", { platform: this.getPlatformLabel(platform) })
+      : this.i18n.t("{platform} Shop registriert · Monitoring verfügbar{earlyGate}.", { platform: this.getPlatformLabel(platform), earlyGate: result.earlyGateReady ? this.i18n.t(" · Early Gate bereit") : "" });
     this.newShop = { id: "", name: "", baseUrl: "", platform };
     await Promise.all([this.loadShops(), this.loadSystemStatus()]);
   }
@@ -1373,34 +1393,34 @@ export class AppComponent implements OnInit, OnDestroy {
     const needsCheckout = earlyGate || this.taskMode === "auto-checkout";
 
     if (!this.taskName.trim() || !this.selectedShopId) {
-      this.error = "Task-Name und Shop sind erforderlich.";
+      this.error = this.i18n.t("Task-Name und Shop sind erforderlich.");
       return;
     }
     if (earlyGate && !this.earlyGateProductName.trim()) {
-      this.error = "Für Early Gate ist ein Produktname erforderlich.";
+      this.error = this.i18n.t("Für Early Gate ist ein Produktname erforderlich.");
       return;
     }
     if (!earlyGate && !this.searchTerm.trim()) {
-      this.error = "Für den normalen Produktmonitor ist ein Produkt/Keyword erforderlich.";
+      this.error = this.i18n.t("Für den normalen Produktmonitor ist ein Produkt/Keyword erforderlich.");
       return;
     }
 
     if (needsCheckout) {
       if (!this.selectedProfileId) {
-        this.error = "Für den Browser-Checkout ist ein Profil erforderlich.";
+        this.error = this.i18n.t("Für den Browser-Checkout ist ein Profil erforderlich.");
         return;
       }
       if (!this.selectedShopSupportsCheckout) {
         this.error = earlyGate
-          ? "Der Early-Gate-Browser-Executor ist nicht verfügbar."
-          : "Für diesen Shop ist kein Browser-Checkout-Executor verfügbar.";
+          ? this.i18n.t("Der Early-Gate-Browser-Executor ist nicht verfügbar.")
+          : this.i18n.t("Für diesen Shop ist kein Browser-Checkout-Executor verfügbar.");
         return;
       }
     }
     if (this.taskProxyMode === "proxy" && !this.selectedTaskProxyId) {
       this.error = needsCheckout
-        ? "Bitte einen Proxy für die Checkout-Session auswählen."
-        : "Bitte einen Proxy für die Monitor-Runtime auswählen.";
+        ? this.i18n.t("Bitte einen Proxy für die Checkout-Session auswählen.")
+        : this.i18n.t("Bitte einen Proxy für die Monitor-Runtime auswählen.");
       return;
     }
 
@@ -1464,16 +1484,16 @@ export class AppComponent implements OnInit, OnDestroy {
     if (needsCheckout && this.taskPaymentEnabled) {
       const paymentResult = await this.electron.setPaymentSession(taskId, this.buildPaymentSession());
       if (!paymentResult.success) {
-        this.error = `Task erstellt, aber Zahlungs-Session konnte nicht gesetzt werden: ${paymentResult.error}`;
+        this.error = this.i18n.t("Task erstellt, aber Zahlungs-Session konnte nicht gesetzt werden: {error}", { error: paymentResult.error });
         return;
       }
     }
 
     this.info = earlyGate
-      ? `Early-Gate-Task ${result.taskId} erstellt. ARES startet den Browser erst beim passiven Gate-Signal.`
+      ? this.i18n.t("Early-Gate-Task {id} erstellt. ARES startet den Browser erst beim passiven Gate-Signal.", { id: result.taskId })
       : this.taskMode === "auto-checkout"
-        ? `Auto-Checkout-Task ${result.taskId} erstellt. Bei Verfügbarkeit startet ARES genau eine isolierte Checkout-Session.`
-        : `Monitoring-Task ${result.taskId} erstellt. Chromium wird nur bei leerem/unklarem Fast-Path zugeschaltet.`;
+        ? this.i18n.t("Auto-Checkout-Task {id} erstellt. Bei Verfügbarkeit startet ARES genau eine isolierte Checkout-Session.", { id: result.taskId })
+        : this.i18n.t("Monitoring-Task {id} erstellt. Chromium wird nur bei leerem/unklarem Fast-Path zugeschaltet.", { id: result.taskId });
     this.taskName = "";
     this.searchTerm = "";
     this.earlyGateProductName = "";
@@ -1504,13 +1524,13 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.bulkStarting) return;
     const targets = [...this.startableTasks, ...this.restartableTasks];
     if (!targets.length) {
-      this.info = "Keine startbaren oder neu startbaren Tasks.";
+      this.info = this.i18n.t("Keine startbaren oder neu startbaren Tasks.");
       return;
     }
 
     this.bulkStarting = true;
     this.error = "";
-    this.info = `Starte ${targets.length} Task(s)…`;
+    this.info = this.i18n.t("Starte {count} Task(s)…", { count: targets.length });
 
     let started = 0;
     const failures: string[] = [];
@@ -1523,11 +1543,13 @@ export class AppComponent implements OnInit, OnDestroy {
             ? await this.electron.restartTask(target.id)
             : await this.electron.startTask(target.id);
           if (result?.success) started += 1;
-          else failures.push(`${target.config.name || target.id}: ${result?.error || "unbekannter Fehler"}`);
+          else failures.push(this.i18n.t("{name}: {error}", { name: target.config.name || target.id, error: result?.error || this.i18n.t("unbekannter Fehler") }));
         } catch (error) {
           failures.push(`${target.config.name || target.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
-        this.info = `${started}/${targets.length} Tasks ${restart ? "neu gestartet" : "gestartet"}…`;
+        this.info = restart
+          ? this.i18n.t("{started}/{total} Tasks neu gestartet…", { started, total: targets.length })
+          : this.i18n.t("{started}/{total} Tasks gestartet…", { started, total: targets.length });
         if (index < targets.length - 1) await this.delay(500);
       }
     } finally {
@@ -1535,8 +1557,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     this.info = failures.length
-      ? `${started}/${targets.length} Tasks gestartet · ${failures.length} Fehler.`
-      : `${started}/${targets.length} Tasks gestartet.`;
+      ? this.i18n.t("{started}/{total} Tasks gestartet · {errors} Fehler.", { started, total: targets.length, errors: failures.length })
+      : this.i18n.t("{started}/{total} Tasks gestartet.", { started, total: targets.length });
     if (failures.length) this.error = failures.slice(0, 3).join(" · ");
     await Promise.all([this.loadTasks(), this.loadSystemStatus()]);
   }
@@ -1567,13 +1589,13 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.bulkStopping) return;
     const targets = [...this.stoppableTasks];
     if (!targets.length) {
-      this.info = "Keine laufenden Tasks zum Stoppen.";
+      this.info = this.i18n.t("Keine laufenden Tasks zum Stoppen.");
       return;
     }
 
     this.bulkStopping = true;
     this.error = "";
-    this.info = `Stoppe ${targets.length} Task(s)…`;
+    this.info = this.i18n.t("Stoppe {count} Task(s)…", { count: targets.length });
 
     let stopped = 0;
     const failures: string[] = [];
@@ -1584,11 +1606,11 @@ export class AppComponent implements OnInit, OnDestroy {
           await this.electron.clearPaymentSession(target.id).catch(() => undefined);
           const result = await this.electron.stopTask(target.id);
           if (result?.success) stopped += 1;
-          else failures.push(`${target.config.name || target.id}: ${result?.error || "unbekannter Fehler"}`);
+          else failures.push(this.i18n.t("{name}: {error}", { name: target.config.name || target.id, error: result?.error || this.i18n.t("unbekannter Fehler") }));
         } catch (error) {
           failures.push(`${target.config.name || target.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
-        this.info = `${stopped}/${targets.length} Tasks gestoppt…`;
+        this.info = this.i18n.t("{stopped}/{total} Tasks gestoppt…", { stopped, total: targets.length });
         if (index < targets.length - 1) await this.delay(300);
       }
     } finally {
@@ -1596,8 +1618,8 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     this.info = failures.length
-      ? `${stopped}/${targets.length} Tasks gestoppt · ${failures.length} Fehler.`
-      : `${stopped}/${targets.length} Tasks gestoppt.`;
+      ? this.i18n.t("{stopped}/{total} Tasks gestoppt · {errors} Fehler.", { stopped, total: targets.length, errors: failures.length })
+      : this.i18n.t("{stopped}/{total} Tasks gestoppt.", { stopped, total: targets.length });
     if (failures.length) this.error = failures.slice(0, 3).join(" · ");
     await Promise.all([this.loadTasks(), this.loadSystemStatus()]);
   }
@@ -1610,13 +1632,13 @@ export class AppComponent implements OnInit, OnDestroy {
       this.error = result.error;
       return;
     }
-    this.info = "Task neu gestartet.";
+    this.info = this.i18n.t("Task neu gestartet.");
     await this.refreshTaskView(taskId);
   }
 
   async deleteTask(taskId: string): Promise<void> {
     const confirmed = !this.uiSettings.confirmDestructive || typeof window === "undefined" || window.confirm(
-      "Task dauerhaft löschen? Verlauf, Logs und Monitor-Ereignisse werden entfernt."
+      this.i18n.t("Task dauerhaft löschen? Verlauf, Logs und Monitor-Ereignisse werden entfernt.")
     );
     if (!confirmed) return;
 
@@ -1627,7 +1649,7 @@ export class AppComponent implements OnInit, OnDestroy {
       this.error = result.error;
       return;
     }
-    this.info = "Task gelöscht.";
+    this.info = this.i18n.t("Task gelöscht.");
     if (this.expandedTaskLogId === taskId) this.expandedTaskLogId = "";
     await Promise.all([this.loadTasks(), this.loadSystemStatus()]);
   }
@@ -1684,7 +1706,7 @@ export class AppComponent implements OnInit, OnDestroy {
     } else {
       profileId = String(task.config.data?.["profileId"] ?? "");
     }
-    if (!profileId) return this.isMonitorOnlyTask(task) ? "Runtime-Profil optional" : "kein Profil";
+    if (!profileId) return this.isMonitorOnlyTask(task) ? this.i18n.t("Runtime-Profil optional") : this.i18n.t("kein Profil");
     return this.profiles.find(profile => profile.id === profileId)?.name ?? profileId;
   }
 
@@ -1697,9 +1719,9 @@ export class AppComponent implements OnInit, OnDestroy {
     }
 
     const runtime = task.config.data?.["proxyRuntime"] as Record<string, unknown> | undefined;
-    if (runtime?.["mode"] === "direct") return "Direktverbindung";
+    if (runtime?.["mode"] === "direct") return this.i18n.t("Direktverbindung");
     if (runtime?.["proxyName"]) return String(runtime["proxyName"]);
-    if (runtime?.["mode"] === "legacy-profile") return "Legacy Profil-Proxy";
+    if (runtime?.["mode"] === "legacy-profile") return this.i18n.t("Legacy Profil-Proxy");
 
     const selection = task.config.data?.["proxySelection"] as ProxySelection | undefined;
     const profileId = String(task.config.data?.["profileId"] ?? "");
@@ -1710,15 +1732,15 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!this.isAutoCheckoutTask(task)) return "";
     if (this.isEarlyGateMonitorTask(task)) {
       const runtime = this.getEarlyGateRuntime(task);
-      if (!runtime) return "MONITORING · wartet auf passives Gate-Signal";
-      if (runtime["childTaskId"]) return `Gate erkannt · Browser-Child ${String(runtime["childTaskId"])}`;
+      if (!runtime) return this.i18n.t("MONITORING · wartet auf passives Gate-Signal");
+      if (runtime["childTaskId"]) return this.i18n.t("Gate erkannt · Browser-Child {id}", { id: String(runtime["childTaskId"]) });
       return String(runtime["stage"] ?? "monitoring").toUpperCase().replace(/-/g, "_");
     }
     const runtime = task.config.data?.["autoCheckoutRuntime"] as Record<string, unknown> | undefined;
-    if (!runtime) return "Wartet auf verfügbares Produkt";
-    if (runtime["status"] === "failed") return `Trigger fehlgeschlagen: ${String(runtime["error"] ?? "unbekannt")}`;
-    if (runtime["childTaskId"]) return `Checkout gestartet · ${String(runtime["childTaskId"])}`;
-    return "Checkout wird gestartet";
+    if (!runtime) return this.i18n.t("Wartet auf verfügbares Produkt");
+    if (runtime["status"] === "failed") return this.i18n.t("Trigger fehlgeschlagen: {error}", { error: String(runtime["error"] ?? this.i18n.t("unbekannt")) });
+    if (runtime["childTaskId"]) return this.i18n.t("Checkout gestartet · {id}", { id: String(runtime["childTaskId"]) });
+    return this.i18n.t("Checkout wird gestartet");
   }
 
   getTaskParentId(task: TaskView): string {
@@ -1734,13 +1756,13 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   getActiveArea(task: TaskView): string {
-    if (this.isEarlyGateChildTask(task)) return "Browser-Child";
+    if (this.isEarlyGateChildTask(task)) return this.i18n.t("Browser-Child");
     const runtime = this.getEarlyGateRuntime(task);
     const area = String(runtime?.["activeArea"] ?? "");
-    if (area === "gate") return "Gate";
-    if (area === "browser-child") return "Browser-Child";
-    if (area === "monitor") return "Monitor";
-    return this.isMonitorTask(task) ? "Monitor" : "Browser-Child";
+    if (area === "gate") return this.i18n.t("Gate");
+    if (area === "browser-child") return this.i18n.t("Browser-Child");
+    if (area === "monitor") return this.i18n.t("Monitor");
+    return this.isMonitorTask(task) ? this.i18n.t("Monitor") : this.i18n.t("Browser-Child");
   }
 
   getActiveDiscoveryKeywords(task: TaskView): string[] {
@@ -1790,11 +1812,11 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   getTaskCaptchaStatus(task: TaskView): string {
-    if (this.isMonitorOnlyTask(task)) return "HTTP fast path · SeleniumBase fallback bei Bedarf";
-    if (this.isMonitorTask(task)) return "Browser startet erst beim Checkout-Trigger";
+    if (this.isMonitorOnlyTask(task)) return this.i18n.t("HTTP fast path · SeleniumBase fallback bei Bedarf");
+    if (this.isMonitorTask(task)) return this.i18n.t("Browser startet erst beim Checkout-Trigger");
     const data = task.config.data ?? {};
     const value = data["liveChallengeStatus"] ?? data["captchaStatus"] ?? data["challengeStatus"];
-    return value ? String(value) : "Kein aktueller Challenge-Status";
+    return value ? String(value) : this.i18n.t("Kein aktueller Challenge-Status");
   }
 
   getMonitorPipeline(task: TaskView): Record<string, unknown> | undefined {
@@ -1816,7 +1838,7 @@ export class AppComponent implements OnInit, OnDestroy {
   getMonitorAvailability(task: TaskView): string {
     const pipeline = this.getMonitorPipeline(task);
     const state = pipeline?.["productState"];
-    if (typeof pipeline?.["available"] === "boolean") return pipeline["available"] ? "Available" : "Not available";
+    if (typeof pipeline?.["available"] === "boolean") return pipeline["available"] ? this.i18n.t("Available") : this.i18n.t("Not available");
     return state ? String(state) : "—";
   }
 
@@ -1832,8 +1854,8 @@ export class AppComponent implements OnInit, OnDestroy {
     const wait = queue?.["timeToWaitSeconds"];
     if (position === undefined && wait === undefined) return "—";
     const parts = [];
-    if (position !== undefined) parts.push(`Position ${position}`);
-    if (wait !== undefined) parts.push(`${wait}s wait`);
+    if (position !== undefined) parts.push(this.i18n.t("Position {position}", { position: String(position) }));
+    if (wait !== undefined) parts.push(this.i18n.t("{wait}s wait", { wait: String(wait) }));
     return parts.join(" · ");
   }
 
@@ -1860,11 +1882,11 @@ export class AppComponent implements OnInit, OnDestroy {
     if (this.isMonitorOnlyTask(task)) return "";
     if (this.isAutoCheckoutTask(task)) {
       const action = task.config.data?.["monitorAction"] as Record<string, unknown> | undefined;
-      return action?.["paymentEnabled"] ? "Session-Payment wird beim Trigger an den Browser-Child übergeben." : "Payment bleibt manuell.";
+      return action?.["paymentEnabled"] ? this.i18n.t("Session-Payment wird beim Trigger an den Browser-Child übergeben.") : this.i18n.t("Payment bleibt manuell.");
     }
     const preparation = task.config.data?.["paymentPreparation"] as Record<string, unknown> | undefined;
-    if (!preparation) return this.isEarlyGateChildTask(task) ? "Checkout-Session aktiv; Zahlungsstatus folgt dem realen Checkout-DOM." : "Wird im Checkout erkannt, sobald sichtbar.";
-    return String(preparation["note"] ?? "Zahlungsstatus aktualisiert.");
+    if (!preparation) return this.isEarlyGateChildTask(task) ? this.i18n.t("Checkout-Session aktiv; Zahlungsstatus folgt dem realen Checkout-DOM.") : this.i18n.t("Wird im Checkout erkannt, sobald sichtbar.");
+    return String(preparation["note"] ?? this.i18n.t("Zahlungsstatus aktualisiert."));
   }
 
   getTaskDetectedPaymentMethods(task: TaskView): string {
@@ -1875,8 +1897,8 @@ export class AppComponent implements OnInit, OnDestroy {
 
   getProfileProxyName(profile: ProfileView): string {
     if (profile.preferredProxyId) return this.getProxyName(profile.preferredProxyId);
-    if (profile.proxy?.host) return "Legacy Proxy";
-    return "Direkt";
+    if (profile.proxy?.host) return this.i18n.t("Legacy Proxy");
+    return this.i18n.t("Direkt");
   }
 
   getProxyName(proxyId: string): string {
@@ -1888,7 +1910,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   getCaptchaKeyStatusLabel(): string {
-    return this.system.captchaApiKeyConfigured ? "API-Key gesetzt" : "API-Key fehlt";
+    return this.system.captchaApiKeyConfigured ? this.i18n.t("API-Key gesetzt") : this.i18n.t("API-Key fehlt");
   }
 
   getSupportedChallengeTypes(): string {
@@ -1903,16 +1925,16 @@ export class AppComponent implements OnInit, OnDestroy {
       shopware: "Shopware", magento: "Magento / Adobe Commerce", bigcommerce: "BigCommerce",
       prestashop: "PrestaShop", squarespace: "Squarespace Commerce", ecwid: "Ecwid",
       lightspeed: "Lightspeed eCom", commercetools: "commercetools",
-      "salesforce-commerce-cloud": "Salesforce Commerce Cloud", "pokemon-center": "Pokémon Center", custom: "Custom / Sonstige"
+      "salesforce-commerce-cloud": "Salesforce Commerce Cloud", "pokemon-center": "Pokémon Center", custom: this.i18n.t("Custom / Sonstige")
     };
     return labels[platform] || platform;
   }
 
   getPaymentMethodLabel(method?: PaymentMethod): string {
     const labels: Record<PaymentMethod, string> = {
-      card: "Karte", paypal: "PayPal", "shop-pay": "Shop Pay", klarna: "Klarna", other: "Andere"
+      card: this.i18n.t("Karte"), paypal: "PayPal", "shop-pay": "Shop Pay", klarna: "Klarna", other: this.i18n.t("Andere")
     };
-    return method ? labels[method] : "Nicht gesetzt";
+    return method ? labels[method] : this.i18n.t("Nicht gesetzt");
   }
 
   hasExecutorForShop(shop: ShopView): boolean {
@@ -1920,31 +1942,31 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   getSystemNodeStatusLabel(): string {
-    if (this.system.browserPreview) return "Browser-Vorschau";
-    if (!this.system.systemNode) return "Node unbekannt";
-    return this.system.systemNode.ok ? "NODE OK" : "NODE FEHLER";
+    if (this.system.browserPreview) return this.i18n.t("Browser-Vorschau");
+    if (!this.system.systemNode) return this.i18n.t("Node unbekannt");
+    return this.system.systemNode.ok ? "NODE OK" : this.i18n.t("NODE FEHLER");
   }
 
   getSystemNodeDetails(): string {
-    if (this.system.browserPreview) return "Echter Worker-Check läuft nur in Electron.";
+    if (this.system.browserPreview) return this.i18n.t("Echter Worker-Check läuft nur in Electron.");
     const node = this.system.systemNode;
-    if (!node) return "System Node konnte nicht geprüft werden.";
-    const version = node.version || "unbekannt";
+    if (!node) return this.i18n.t("System Node konnte nicht geprüft werden.");
+    const version = node.version || this.i18n.t("unbekannt");
     const requirement = this.system.systemNodeRequirement || ">=20";
     const base = `${node.executable} ${version} · benötigt ${requirement}`;
-    return node.ok ? base : `${base} · ${node.error || "Worker kann evtl. nicht starten."}`;
+    return node.ok ? base : `${base} · ${node.error || this.i18n.t("Worker kann evtl. nicht starten.")}`;
   }
 
   getPersistenceStatusLabel(): string {
     if (this.system.browserPreview) return "PREVIEW";
-    return this.system.persistence?.ready && !this.system.persistence?.error ? "SQLITE OK" : "DB FEHLER";
+    return this.system.persistence?.ready && !this.system.persistence?.error ? "SQLITE OK" : this.i18n.t("DB FEHLER");
   }
 
   getPersistenceDetails(): string {
-    if (this.system.browserPreview) return "Browser-Vorschau speichert nur im Arbeitsspeicher.";
+    if (this.system.browserPreview) return this.i18n.t("Browser-Vorschau speichert nur im Arbeitsspeicher.");
     const persistence = this.system.persistence;
-    if (!persistence) return "Persistenzstatus unbekannt.";
-    return persistence.error || `${persistence.type.toUpperCase()} · Task-Historie aktiv`;
+    if (!persistence) return this.i18n.t("Persistenzstatus unbekannt.");
+    return persistence.error || `${persistence.type.toUpperCase()} · ${this.i18n.t("Task-Historie aktiv")}`;
   }
 
   isSystemNodeOk(): boolean {
@@ -1990,7 +2012,7 @@ export class AppComponent implements OnInit, OnDestroy {
     this.error = "";
     const result = await this.electron.updateDiscoveryKeywords(task.id, keywords);
     if (!result.success) {
-      this.error = result.error || "Discovery-Keywords konnten nicht aktualisiert werden.";
+      this.error = result.error || this.i18n.t("Discovery-Keywords konnten nicht aktualisiert werden.");
       return;
     }
     const postQueue = task.config.data?.["postQueueDiscovery"] as Record<string, unknown> | undefined;
@@ -2002,7 +2024,7 @@ export class AppComponent implements OnInit, OnDestroy {
         updatedAt: new Date().toISOString()
       }
     };
-    this.info = `Aktive Discovery-Keywords aktualisiert: ${result.keywords.length}`;
+    this.info = this.i18n.t("Aktive Discovery-Keywords aktualisiert: {count}", { count: result.keywords.length });
   }
 
   private isFlowStepActive(task: TaskView, key: FlowStepKey): boolean {
@@ -2033,10 +2055,10 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private proxySelectionLabel(selection: ProxySelection | undefined, profileId: string): string {
-    if (selection?.mode === "direct") return "Direktverbindung";
+    if (selection?.mode === "direct") return this.i18n.t("Direktverbindung");
     if (selection?.mode === "proxy" && selection.proxyId) return this.getProxyName(selection.proxyId);
     const profile = this.profiles.find(item => item.id === profileId);
-    return profile?.preferredProxyId ? `Profilstandard · ${this.getProxyName(profile.preferredProxyId)}` : "Profilstandard · direkt";
+    return profile?.preferredProxyId ? this.i18n.t("Profilstandard · {name}", { name: this.getProxyName(profile.preferredProxyId) }) : this.i18n.t("Profilstandard · direkt");
   }
 
   private buildPaymentSession(): CheckoutPaymentSession {
@@ -2058,6 +2080,18 @@ export class AppComponent implements OnInit, OnDestroy {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  private dismissBootSplash(): void {
+    if (typeof document === "undefined") return;
+    const splash = document.getElementById("ares-boot");
+    if (!splash) return;
+    if (this.uiSettings.reduceMotion) {
+      splash.remove();
+      return;
+    }
+    splash.classList.add("ares-boot--done");
+    window.setTimeout(() => splash.remove(), 400);
+  }
+
   private emptyProfile(): ProfileView {
     return toProfileV2Draft();
   }
@@ -2067,15 +2101,15 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   private getVisionStatusLabel(): string {
-    if (!this.visionStatus) return "Noch nicht geprüft.";
+    if (!this.visionStatus) return this.i18n.t("Noch nicht geprüft.");
     if (this.visionStatus.ready) {
       const model = this.visionStatus.model ? ` · ${this.visionStatus.model}` : "";
       const device = this.visionStatus.device ? ` · ${this.visionStatus.device}` : "";
-      return `Bereit${model}${device}`;
+      return this.i18n.t("Bereit{model}{device}", { model, device });
     }
     if (this.visionStatus.error) return this.visionStatus.error;
-    if (this.visionStatus.dependenciesReady === false) return "Abhängigkeiten fehlen.";
-    return "Nicht bereit.";
+    if (this.visionStatus.dependenciesReady === false) return this.i18n.t("Abhängigkeiten fehlen.");
+    return this.i18n.t("Nicht bereit.");
   }
 
   private parseProxyImportLine(line: string, index: number): ProxyImportPreview {
@@ -2111,14 +2145,14 @@ export class AppComponent implements OnInit, OnDestroy {
         }
       }
     } catch (error) {
-      return { line, valid: false, duplicate: false, error: error instanceof Error ? error.message : "Ungültiges Format" };
+      return { line, valid: false, duplicate: false, error: error instanceof Error ? error.message : this.i18n.t("Ungültiges Format") };
     }
 
     if (!["http", "https", "socks5"].includes(protocol)) {
-      return { line, valid: false, duplicate: false, error: "Protokoll muss HTTP, HTTPS oder SOCKS5 sein." };
+      return { line, valid: false, duplicate: false, error: this.i18n.t("Protokoll muss HTTP, HTTPS oder SOCKS5 sein.") };
     }
     if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-      return { line, valid: false, duplicate: false, error: "Host oder Port ungültig." };
+      return { line, valid: false, duplicate: false, error: this.i18n.t("Host oder Port ungültig.") };
     }
 
     const id = this.buildProxyImportId(host, port, index);

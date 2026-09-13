@@ -1,6 +1,7 @@
 import { Component, Input, OnDestroy, OnInit } from "@angular/core";
 import { ElectronService } from "../services/electron.service";
 import { ProfileBrowserService, type ProfileBrowserStatusView } from "../services/profile-browser.service";
+import { I18nService } from "../i18n/i18n.service";
 import type { AresProfile } from "../../profiles/models";
 import { clearProfileBrowserUserAgent } from "../../profiles/profile-browser-reset";
 
@@ -40,7 +41,8 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
 
   constructor(
     private readonly electron: ElectronService,
-    private readonly profileBrowser: ProfileBrowserService
+    private readonly profileBrowser: ProfileBrowserService,
+    readonly i18n: I18nService
   ) {}
 
   ngOnInit(): void {
@@ -104,10 +106,10 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
   }
 
   get apiKeyCheckLabel(): string {
-    if (!this.apiKeyCheck) return "NOCH NICHT GETESTET";
-    if (this.apiKeyCheck.valid === true) return "GÜLTIG";
-    if (this.apiKeyCheck.valid === false) return "UNGÜLTIG";
-    return "CHECK FEHLER";
+    if (!this.apiKeyCheck) return this.i18n.t("NOCH NICHT GETESTET");
+    if (this.apiKeyCheck.valid === true) return this.i18n.t("GÜLTIG");
+    if (this.apiKeyCheck.valid === false) return this.i18n.t("UNGÜLTIG");
+    return this.i18n.t("CHECK FEHLER");
   }
 
   get healthyWorkerCount(): number {
@@ -141,7 +143,7 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
 
   queueWait(task: any): string {
     const seconds = this.getQueue(task)?.timeToWaitSeconds;
-    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return "wird ermittelt";
+    if (typeof seconds !== "number" || !Number.isFinite(seconds)) return this.i18n.t("wird ermittelt");
     return this.formatDuration(seconds * 1_000);
   }
 
@@ -163,7 +165,7 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
 
   queueStatusText(task: any): string {
     const queue = this.getQueue(task);
-    return queue?.statusText || "Warteschlange aktiv – Browser bleibt verbunden.";
+    return queue?.statusText || this.i18n.t("Warteschlange aktiv – Browser bleibt verbunden.");
   }
 
   workerState(worker: any): string {
@@ -173,9 +175,9 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
   }
 
   workerHeartbeat(worker: any): string {
-    if (!worker.lastHeartbeatAt) return "noch kein Heartbeat";
+    if (!worker.lastHeartbeatAt) return this.i18n.t("noch kein Heartbeat");
     const value = new Date(worker.lastHeartbeatAt);
-    return Number.isNaN(value.getTime()) ? "Heartbeat unbekannt" : value.toLocaleTimeString("de-DE");
+    return Number.isNaN(value.getTime()) ? this.i18n.t("Heartbeat unbekannt") : value.toLocaleTimeString(this.i18n.language === "de" ? "de-DE" : "en-US");
   }
 
   watchdogLabel(): string {
@@ -190,8 +192,8 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
 
   profileBrowserDetails(profileId: string): string {
     const status = this.profileBrowserStatuses[profileId];
-    if (!status?.open) return "GESCHLOSSEN";
-    return `OFFEN${status.pid ? ` · PID ${status.pid}` : ""}`;
+    if (!status?.open) return this.i18n.t("GESCHLOSSEN");
+    return this.i18n.t("OFFEN{pid}", { pid: status.pid ? ` · PID ${status.pid}` : "" });
   }
 
   async openProfileBrowser(profile: any): Promise<void> {
@@ -202,11 +204,11 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.open(profileId);
       if (!result?.success) {
-        this.actionMessage = result?.error || `Profil-Browser ${profile?.name || profileId} konnte nicht geöffnet werden.`;
+        this.actionMessage = result?.error || this.i18n.t("Profil-Browser {name} konnte nicht geöffnet werden.", { name: profile?.name || profileId });
         return;
       }
       this.profileBrowserStatuses[profileId] = result.status;
-      this.actionMessage = `Profil-Browser ${profile?.name || profileId} geöffnet.`;
+      this.actionMessage = this.i18n.t("Profil-Browser {name} geöffnet.", { name: profile?.name || profileId });
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
     }
@@ -220,11 +222,11 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     try {
       const result = await this.profileBrowser.close(profileId);
       if (!result?.success) {
-        this.actionMessage = result?.error || `Profil-Browser ${profile?.name || profileId} konnte nicht geschlossen werden.`;
+        this.actionMessage = result?.error || this.i18n.t("Profil-Browser {name} konnte nicht geschlossen werden.", { name: profile?.name || profileId });
         return;
       }
       this.profileBrowserStatuses[profileId] = result.status;
-      this.actionMessage = `Profil-Browser ${profile?.name || profileId} geschlossen. Session bleibt erhalten.`;
+      this.actionMessage = this.i18n.t("Profil-Browser {name} geschlossen. Session bleibt erhalten.", { name: profile?.name || profileId });
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
     }
@@ -234,8 +236,7 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     const profileId = String(profile?.id ?? "").trim();
     if (!profileId || this.profileBrowserBusyIds.has(profileId)) return;
     const confirmed = typeof window === "undefined" || window.confirm(
-      `Browser-Session für ${profile.name || profileId} vollständig löschen?\n\n` +
-      "Browserdaten, Cookies, Storage, Cache, Cookie-Snapshots und der gespeicherte User-Agent werden entfernt. Adresse, Proxy und Zahlung bleiben erhalten."
+      this.i18n.t("Browser-Session für {name} vollständig löschen?\n\nBrowserdaten, Cookies, Storage, Cache, Cookie-Snapshots und der gespeicherte User-Agent werden entfernt. Adresse, Proxy und Zahlung bleiben erhalten.", { name: profile.name || profileId })
     );
     if (!confirmed) return;
 
@@ -245,7 +246,7 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     try {
       const saveResult = await this.electron.saveProfile(profileWithoutUserAgent);
       if (!saveResult?.success) {
-        this.actionMessage = saveResult?.error || "User-Agent konnte vor dem Session-Reset nicht sicher zurückgesetzt werden.";
+        this.actionMessage = saveResult?.error || this.i18n.t("User-Agent konnte vor dem Session-Reset nicht sicher zurückgesetzt werden.");
         return;
       }
 
@@ -253,13 +254,13 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
       if (!resetResult?.success) {
         const rollback = await this.electron.saveProfile(profile).catch(() => undefined);
         this.actionMessage = rollback?.success
-          ? (resetResult?.error || "Browser-Session konnte nicht gelöscht werden; User-Agent wurde wiederhergestellt.")
-          : `${resetResult?.error || "Browser-Session konnte nicht gelöscht werden."} User-Agent-Rollback ebenfalls fehlgeschlagen.`;
+          ? (resetResult?.error || this.i18n.t("Browser-Session konnte nicht gelöscht werden; User-Agent wurde wiederhergestellt."))
+          : `${resetResult?.error || this.i18n.t("Browser-Session konnte nicht gelöscht werden.")} ${this.i18n.t("User-Agent-Rollback ebenfalls fehlgeschlagen.")}`;
         return;
       }
 
       this.profileBrowserStatuses[profileId] = resetResult.status;
-      this.actionMessage = `Profil ${profile.name || profileId}: Browserdaten, Cookie-Snapshots und User-Agent vollständig gelöscht.`;
+      this.actionMessage = this.i18n.t("Profil {name}: Browserdaten, Cookie-Snapshots und User-Agent vollständig gelöscht.", { name: profile.name || profileId });
       await this.refreshRuntime();
     } finally {
       this.profileBrowserBusyIds.delete(profileId);
@@ -270,12 +271,12 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     if (this.bulkStarting) return;
     const targets = [...this.startableTasks];
     if (!targets.length) {
-      this.actionMessage = "Keine QUEUED Tasks zum Starten.";
+      this.actionMessage = this.i18n.t("Keine QUEUED Tasks zum Starten.");
       return;
     }
 
     this.bulkStarting = true;
-    this.actionMessage = `${targets.length} Task(s) werden gestaffelt gestartet…`;
+    this.actionMessage = this.i18n.t("{count} Task(s) werden gestaffelt gestartet…", { count: targets.length });
 
     let started = 0;
     let failed = 0;
@@ -287,13 +288,13 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
       } catch {
         failed += 1;
       }
-      this.actionMessage = `${started}/${targets.length} gestartet…`;
+      this.actionMessage = this.i18n.t("{started}/{total} gestartet…", { started, total: targets.length });
       if (index < targets.length - 1) await this.delay(500);
     }
 
     this.actionMessage = failed
-      ? `${started}/${targets.length} Task(s) gestartet · ${failed} Fehler.`
-      : `${targets.length} Task(s) gestartet.`;
+      ? this.i18n.t("{started}/{total} Task(s) gestartet · {errors} Fehler.", { started, total: targets.length, errors: failed })
+      : this.i18n.t("{total} Task(s) gestartet.", { total: targets.length });
     await this.refreshRuntime();
     this.bulkStarting = false;
   }
@@ -302,7 +303,7 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     if (this.bulkStopping) return;
     const targets = [...this.stoppableTasks];
     if (!targets.length) {
-      this.actionMessage = "Keine laufenden Tasks zum Stoppen.";
+      this.actionMessage = this.i18n.t("Keine laufenden Tasks zum Stoppen.");
       return;
     }
 
@@ -315,8 +316,8 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
       }));
       const failed = results.filter(result => result.status === "rejected" || (result.status === "fulfilled" && !result.value?.success));
       this.actionMessage = failed.length
-        ? `${targets.length - failed.length}/${targets.length} Task(s) gestoppt · ${failed.length} Fehler.`
-        : `${targets.length} Task(s) gestoppt.`;
+        ? this.i18n.t("{stopped}/{total} Task(s) gestoppt · {errors} Fehler.", { stopped: targets.length - failed.length, total: targets.length, errors: failed.length })
+        : this.i18n.t("{total} Task(s) gestoppt.", { total: targets.length });
       await this.refreshRuntime();
     } finally {
       this.bulkStopping = false;
@@ -331,11 +332,11 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
       const result = await this.electron.testCapmonsterApiKey();
       this.apiKeyCheck = result;
       if (result?.valid === true) {
-        this.actionMessage = "CapMonster API-Key ist gültig.";
+        this.actionMessage = this.i18n.t("CapMonster API-Key ist gültig.");
       } else if (result?.valid === false) {
-        this.actionMessage = `CapMonster API-Key wurde abgelehnt${result.errorCode ? ` · ${result.errorCode}` : ""}.`;
+        this.actionMessage = this.i18n.t("CapMonster API-Key wurde abgelehnt{code}.", { code: result.errorCode ? ` · ${result.errorCode}` : "" });
       } else {
-        this.actionMessage = result?.error || "CapMonster API-Key konnte nicht geprüft werden.";
+        this.actionMessage = result?.error || this.i18n.t("CapMonster API-Key konnte nicht geprüft werden.");
       }
       await this.refreshRuntime();
     } finally {
@@ -350,11 +351,11 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
     try {
       const result = await this.electron.setFinalPurchaseAllowed(allowed);
       if (!result?.success) {
-        this.actionMessage = result?.error || "Globale Kauf-Freigabe wurde vom Backend abgelehnt.";
+        this.actionMessage = result?.error || this.i18n.t("Globale Kauf-Freigabe wurde vom Backend abgelehnt.");
       } else {
         this.actionMessage = result.allowFinalPurchase
-          ? "Finaler Kauf global freigegeben. Backend-Guard bleibt bis unmittelbar vor Submit aktiv."
-          : "Finaler Kauf global gesperrt. Alle Checkout-Tasks stoppen vor dem Submit.";
+          ? this.i18n.t("Finaler Kauf global freigegeben. Backend-Guard bleibt bis unmittelbar vor Submit aktiv.")
+          : this.i18n.t("Finaler Kauf global gesperrt. Alle Checkout-Tasks stoppen vor dem Submit.");
       }
       await this.refreshRuntime();
     } finally {
@@ -365,15 +366,15 @@ export class RuntimeControlComponent implements OnInit, OnDestroy {
   async pauseTask(taskId: string): Promise<void> {
     const result = await this.electron.pauseTask(taskId);
     this.actionMessage = result.success
-      ? "Queue-Task pausiert. Browser-Kontext wird kontrolliert beendet."
-      : result.error || "Task konnte nicht pausiert werden.";
+      ? this.i18n.t("Queue-Task pausiert. Browser-Kontext wird kontrolliert beendet.")
+      : result.error || this.i18n.t("Task konnte nicht pausiert werden.");
   }
 
   async stopTask(taskId: string): Promise<void> {
     const result = await this.electron.stopTask(taskId);
     this.actionMessage = result.success
-      ? "Queue-Task gestoppt."
-      : result.error || "Task konnte nicht gestoppt werden.";
+      ? this.i18n.t("Queue-Task gestoppt.")
+      : result.error || this.i18n.t("Task konnte nicht gestoppt werden.");
   }
 
   private isEarlyGateChild(task: any): boolean {
