@@ -261,7 +261,7 @@ export class BrowserWorkerProcessClient {
     const lines = this.stderrLineBuffer.split(/\r?\n/);
     this.stderrLineBuffer = lines.pop() ?? "";
     for (const line of lines) {
-      if (line.startsWith("[MONITOR]")) process.stderr.write(`${line}\n`);
+      if (line.startsWith("[MONITOR]") || line.startsWith("[JOURNEY]")) process.stderr.write(`${line}\n`);
     }
   }
 

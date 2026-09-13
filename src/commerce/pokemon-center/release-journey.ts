@@ -117,6 +117,8 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       // cannot be located on the rendered page.
       const anchor = await this.findProductAnchor(page, candidate.observation);
       if (anchor) {
+        const href = await anchor.evaluate((element: Element) => element.getAttribute("href") || "").catch(() => "");
+        process.stderr.write(`[JOURNEY] discover click-card href=${href} want=${candidate.observation.url ?? ""}\n`);
         await new GhostCursorUiInteractionHelper(page).click(anchor);
         process.stderr.write(`[JOURNEY] discover clicked-card url=${page.url()}\n`);
       } else {
@@ -127,7 +129,7 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       // single immediate check can still see the category page. Poll for the
       // product's add-to-cart control before giving up, otherwise the caller
       // re-navigates to the category and visibly scrolls back to the top.
-      if (await this.waitForAddToCart(page, 8_000)) return candidate.observation;
+      if (await this.waitForAddToCart(page, 12_000)) return candidate.observation;
     }
     return undefined;
   }
@@ -223,7 +225,7 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
     await new GhostCursorUiInteractionHelper(page).click(guest);
     // Follow the shop's own (session-bound) checkout redirect; only fall back
     // to the known checkout URL when the click produced no navigation.
-    if (await this.waitForCheckout(page, 20_000)) {
+    if (await this.waitForCheckout(page, 10_000)) {
       process.stderr.write(`[JOURNEY] openCheckout natural url=${page.url()}\n`);
     } else {
       const checkoutUrl = new URL("/de-de/intl-checkout", shop.baseUrl).toString();

@@ -52,6 +52,13 @@ export interface UiInteractionHelper {
 }
 
 /**
+ * Monotonic per-process counter. Combined with the task-scoped seed namespace
+ * it gives every click a unique seed, so the relative target point and cursor
+ * path differ on every interaction instead of repeating one fixed offset.
+ */
+let interactionClickCounter = 0;
+
+/**
  * Backwards-compatible facade for normal UI automation.
  * InteractionEngine owns readiness/outcome/retries and the seeded Bezier cursor
  * path. Challenge handling stays separate.
@@ -83,8 +90,9 @@ export class GhostCursorUiInteractionHelper implements UiInteractionHelper {
   }
 
   async click(target: Locator, options: UiClickOptions = {}): Promise<void> {
+    interactionClickCounter += 1;
     const result = await this.engine.click(target, {
-      seed: options.seed ?? `${this.seedNamespace}:click`,
+      seed: options.seed ?? `${this.seedNamespace}:click:${interactionClickCounter}`,
       attempts: options.attempts,
       expected: options.expected,
       button: options.button,

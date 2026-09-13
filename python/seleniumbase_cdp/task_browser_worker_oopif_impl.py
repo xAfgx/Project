@@ -775,19 +775,21 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 selector = str(locator.get("selector") or "")
                 nth = int(locator.get("nth")) if isinstance(locator.get("nth"), (int, float)) else -1
                 text_spec = base.pattern_payload(locator.get("hasText"))
-                node_id, session_id = self._resolve_native_node(locator, selector, nth, text_spec)
-                # Native engine scroll (same as Playwright/Puppeteer). The custom
-                # wheel scroll is disabled: CDP frame geometry for nested payment
-                # iframes needs the frame's internal scroll subtracted, and
-                # without that the wheel overshoots the field.
-                self._oopif_registry.call(
-                    "DOM.scrollIntoViewIfNeeded",
-                    {"nodeId": node_id},
-                    session_id=session_id,
-                )
+                frame_path = [str(value) for value in locator.get("framePath") or [] if str(value)]
+                # Native wheel scroll (CDP mouseWheel), no JavaScript. The field
+                # position is taken from the same source the click uses, so the
+                # nested payment iframe can no longer be scrolled past.
+                if not self._smooth_scroll_into_view(selector, nth, text_spec, frame_path):
+                    node_id, session_id = self._resolve_native_node(locator, selector, nth, text_spec)
+                    self._oopif_registry.call(
+                        "DOM.scrollIntoViewIfNeeded",
+                        {"nodeId": node_id},
+                        session_id=session_id,
+                    )
                 return True
             except Exception:
                 return super()._locator_op(action, locator, command)
+        return super()._locator_op(action, locator, command)
         return super()._locator_op(action, locator, command)
 
     def _wheel_log(self, message: str) -> None:
@@ -971,14 +973,13 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 time.sleep(0.2 * (attempt + 1))
         return 0
 
-    def _smooth_scroll_into_view(self, node_id: int, session_id: str, frame_path: List[str]) -> bool:
-        """Wheel-scroll so the node becomes visible, using native CDP mouseWheel.
+    def _smooth_scroll_into_view(self, selector: str, nth: int, text_spec: Dict[str, str] | None, frame_path: List[str]) -> bool:
+        """Wheel-scroll so the field becomes visible, using native CDP mouseWheel.
 
-        DOM.getContentQuads returns frame-local coordinates, so the owning
-        frame's offset inside the main viewport is added first. The wheel is
-        dispatched on the root session at the element's main-frame position.
-        Geometry is re-measured after each scroll because the browser rarely
-        scrolls exactly by the requested amount.
+        The position comes from the same source the click uses: the field's own
+        getBoundingClientRect inside its frame plus the frame's offset in the
+        main viewport. DOM.getContentQuads reports a different coordinate basis
+        for nested iframes, and that mismatch made the wheel overshoot the field.
 
         Returns False when geometry cannot be resolved (caller falls back to
         DOM.scrollIntoViewIfNeeded).
@@ -997,43 +998,21 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 self._wheel_log("no-viewport")
                 return False
 
-            field_frame, _, _ = self._oopif_registry.resolve_path(
-                self._active_target_id(),
-                frame_path,
-                include_offsets=False,
-            )
-
             for attempt in range(8):
-                # Re-read the scroll offset every attempt: DOM.getBoxModel and
-                # getContentQuads report document coordinates, and the page
-                # scroll changes after each wheel event.
+                # Same position source as the click: the field's own
+                # getBoundingClientRect inside its frame plus the frame offset in
+                # the main viewport. DOM.getContentQuads uses a different
+                # coordinate basis for nested iframes, which made the wheel
+                # overshoot the field.
                 scroll_y = self._document_scroll_y()
-                # The frame offset must be re-measured after every scroll: the
-                # iframe's position in the main viewport moves with the page, so
-                # a cached offset made nested fields measure as permanently
-                # off-screen and the wheel scrolled to the bottom in vain.
-                offset_x, offset_y = self._frame_offset_in_main(field_frame)
-                self._wheel_log(f"frame={str(field_frame)[:8]} off=({offset_x:.0f},{offset_y:.0f}) vh={height:.0f}")
-                quads_reply = self._oopif_registry.call(
-                    "DOM.getContentQuads",
-                    {"nodeId": node_id},
-                    session_id=session_id,
-                )
-                quads = quads_reply.get("quads") if isinstance(quads_reply.get("quads"), list) else []
-                if not quads or not isinstance(quads[0], list) or len(quads[0]) < 8:
-                    self._wheel_log("no-quads")
+                offset_x, offset_y = self._frame_viewport_offset(frame_path)
+                probe = self._execute_script_retry(base.locator_script(), selector, nth, text_spec, "bounding-box", {})
+                if not isinstance(probe, dict):
+                    self._wheel_log("no-box")
                     return False
-                quad = [float(value) for value in quads[0][:8]]
-                xs = quad[0::2]
-                ys = quad[1::2]
-                # DOM.getContentQuads already reports viewport coordinates (like
-                # getBoundingClientRect); adding the frame offset yields
-                # main-viewport coordinates. Subtracting window.scrollY here
-                # double-counted the scroll and made the wheel oscillate
-                # (overshoot, correct, overshoot again).
-                top = offset_y + min(ys)
-                bottom = offset_y + max(ys)
-                center_x = offset_x + (sum(xs) / len(xs))
+                top = offset_y + float(probe.get("y") or 0.0)
+                bottom = top + float(probe.get("height") or 0.0)
+                center_x = offset_x + float(probe.get("x") or 0.0) + float(probe.get("width") or 0.0) / 2.0
                 # Generous margin so the wheel scrolls the field well inside the
                 # viewport and DOM.focus afterwards cannot move it again.
                 margin = 110.0

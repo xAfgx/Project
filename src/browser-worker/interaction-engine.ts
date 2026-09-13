@@ -68,6 +68,17 @@ export class InteractionEngine {
   ) {
     this.profiles = mergeProfiles(profiles);
     this.observer = observer ?? new InteractionStateObserver();
+    // Continue from the last known pointer position so a fresh helper/engine
+    // does not restart every cursor path at (0,0) and sweep across the header.
+    // The first interaction starts at a plausible in-viewport point instead.
+    const saved = page["aresPointer"] as InteractionPoint | undefined;
+    if (saved && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      this.pointer = { ...saved };
+    } else {
+      const start = new SeededRandom(`ares-pointer-start:${String(page["interactionSeed"] ?? "")}`);
+      this.pointer = { x: start.between(160, 900), y: start.between(140, 560) };
+      page["aresPointer"] = { ...this.pointer };
+    }
   }
 
   async click(locator: Locator, options: ClickInteractionOptions = {}): Promise<InteractionAttemptResult> {
@@ -117,6 +128,7 @@ export class InteractionEngine {
           });
         }
         this.pointer = target;
+        this.page["aresPointer"] = target;
         await this.pauseForClick(random, this.profiles.pointer.postClickPauseMinMs, this.profiles.pointer.postClickPauseMaxMs);
       } catch (error) {
         failureReason = "action-error";
@@ -170,6 +182,7 @@ export class InteractionEngine {
       await this.movePointer(target, new SeededRandom(String(seed)));
     }
     this.pointer = { ...target };
+    this.page["aresPointer"] = { ...target };
   }
 
   async fill(locator: Locator, value: string, options: FillInteractionOptions = {}): Promise<InteractionAttemptResult> {

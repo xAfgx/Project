@@ -169,10 +169,10 @@ export const DEFAULT_INTERACTION_PROFILES: InteractionProfiles = {
       accelerationProfile: "natural",
       stoppingOscillation: true,
       pauseVarianceMs: 4,
-      preClickPauseMinMs: 180,
-      preClickPauseMaxMs: 520,
-      postClickPauseMinMs: 220,
-      postClickPauseMaxMs: 640
+      preClickPauseMinMs: 117,
+      preClickPauseMaxMs: 338,
+      postClickPauseMinMs: 143,
+      postClickPauseMaxMs: 416
    },
    form: {
       readinessTimeoutMs: 4_000,
