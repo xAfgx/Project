@@ -52,6 +52,7 @@ export class TaskOrchestrator {
   private readonly pendingTaskIds: string[] = [];
   private readonly pendingTaskIdSet = new Set<string>();
   private readonly pausedRunningTaskIds = new Set<string>();
+  private readonly pendingCancellations = new Map<string, Promise<void>>();
   private readonly unsubscribeExecutorUpdates?: () => void;
 
   constructor(
@@ -149,10 +150,11 @@ export class TaskOrchestrator {
         success = typeof result === "boolean" ? result : result.success;
       } catch (error) {
         const wasPausedWhileRunning = this.pausedRunningTaskIds.delete(task.id);
+        const cancellationInFlight = this.pendingCancellations.has(task.id);
         const currentState = task.state as TaskState;
         task.lastError = error instanceof Error ? error.message : String(error);
 
-        if (currentState === TaskState.CANCELLED || currentState === TaskState.PAUSED || wasPausedWhileRunning) {
+        if (currentState === TaskState.CANCELLED || currentState === TaskState.PAUSED || wasPausedWhileRunning || cancellationInFlight) {
           if (wasPausedWhileRunning && currentState === TaskState.QUEUED) {
             this.enqueueTask(task.id);
           }
@@ -169,8 +171,9 @@ export class TaskOrchestrator {
       }
 
       const wasPausedWhileRunning = this.pausedRunningTaskIds.delete(task.id);
+      const cancellationInFlight = this.pendingCancellations.has(task.id);
       const currentState = task.state as TaskState;
-      if (currentState === TaskState.CANCELLED || currentState === TaskState.PAUSED || wasPausedWhileRunning) {
+      if (currentState === TaskState.CANCELLED || currentState === TaskState.PAUSED || wasPausedWhileRunning || cancellationInFlight) {
         if (wasPausedWhileRunning && currentState === TaskState.QUEUED) {
           this.enqueueTask(task.id);
         }
@@ -231,22 +234,21 @@ export class TaskOrchestrator {
     this.drainQueue();
   }
 
-  cancelTask(taskId: string): void {
+  cancelTask(taskId: string): Promise<void> {
     const task = this.registry.getTask(taskId);
     if (!task) throw new Error(`Task ${taskId} not found`);
+
+    const existing = this.pendingCancellations.get(taskId);
+    if (existing) return existing;
 
     this.removePendingTask(taskId);
     this.pausedRunningTaskIds.delete(taskId);
     this.retryScheduler.cancelRetry(taskId);
     this.cancellationManager.cancelTask(taskId);
-    void this.executor.cancelTask?.(taskId).catch(error => {
-      task.lastError = error instanceof Error ? error.message : String(error);
-    });
 
-    if (this.stateMachine.canTransition(task.state, TaskState.CANCELLED)) {
-      this.transition(task, TaskState.CANCELLED);
-      this.eventBus.emit("taskCancelled", task);
-    }
+    const pending = this.finishCancellation(task);
+    this.pendingCancellations.set(taskId, pending);
+    return pending;
   }
 
   setTaskQueueWaiting(taskId: string, waiting: boolean): void {
@@ -346,10 +348,29 @@ export class TaskOrchestrator {
     this.pendingTaskIds.length = 0;
     this.pendingTaskIdSet.clear();
     this.pausedRunningTaskIds.clear();
+    this.pendingCancellations.clear();
     this.unsubscribeExecutorUpdates?.();
     this.retryScheduler.cleanup();
     this.cancellationManager.cleanup();
     for (const worker of this.workerPool.getAllWorkers()) worker.stop();
+  }
+
+  private async finishCancellation(task: Task): Promise<void> {
+    try {
+      await this.executor.cancelTask?.(task.id);
+      if (this.stateMachine.canTransition(task.state, TaskState.CANCELLED)) {
+        this.transition(task, TaskState.CANCELLED);
+      }
+    } catch (error) {
+      task.lastError = error instanceof Error ? error.message : String(error);
+      task.updatedAt = new Date();
+      this.eventBus.emit("taskUpdated", task);
+      throw error;
+    } finally {
+      this.pendingCancellations.delete(task.id);
+      await this.registry.saveTask(task.id).catch(() => undefined);
+      this.drainQueue();
+    }
   }
 
   private handleRuntimeTaskUpdate(task: Task): void {
