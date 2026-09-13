@@ -1,4 +1,4 @@
-name: Windows OOPIF UI-close isolation smoke
+name: Windows awaited UI-stop + OOPIF isolation smoke
 
 on:
   push:
@@ -7,22 +7,101 @@ on:
   workflow_dispatch:
 
 jobs:
-  ui-close-isolation:
+  awaited-stop-isolation:
     runs-on: windows-latest
-    timeout-minutes: 22
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Install Node dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Build backend
+        shell: pwsh
+        run: npm run build:backend
+
+      - name: Prove awaited cancellation does not block event loop or race to SUCCESS
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          const assert = require('assert');
+          const { TaskOrchestrator } = require('./dist/backend/orchestrator');
+          const { TaskRepositoryMock, WorkerMock } = require('./dist/backend/mocks');
+          const { TaskState } = require('./dist/backend/models');
+
+          const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          (async () => {
+            const repository = new TaskRepositoryMock();
+            let releaseCancel;
+            let cancelStarted = false;
+            const cancelGate = new Promise(resolve => { releaseCancel = resolve; });
+
+            const executor = {
+              async execute() {
+                await delay(80);
+                return true;
+              },
+              async cancelTask() {
+                cancelStarted = true;
+                await cancelGate;
+              }
+            };
+
+            const orchestrator = new TaskOrchestrator(repository, executor);
+            orchestrator.addWorker(new WorkerMock('stop-smoke-worker'));
+            const task = orchestrator.createTask({ id: 'awaited-stop-smoke', name: 'awaited-stop-smoke', maxRetries: 0 });
+
+            const startPromise = orchestrator.startTask(task.id);
+            const runningDeadline = Date.now() + 2000;
+            while (task.state !== TaskState.RUNNING && Date.now() < runningDeadline) await delay(5);
+            assert.strictEqual(task.state, TaskState.RUNNING, 'task never reached RUNNING');
+
+            let eventLoopTicks = 0;
+            const ticker = setInterval(() => { eventLoopTicks += 1; }, 10);
+            const stopStartedAt = Date.now();
+            let stopResolved = false;
+            const stopPromise = orchestrator.cancelTask(task.id).then(() => { stopResolved = true; });
+
+            await delay(180);
+            assert.strictEqual(cancelStarted, true, 'executor.cancelTask was not invoked');
+            assert.strictEqual(stopResolved, false, 'cancelTask resolved before browser cleanup gate');
+            assert.ok(eventLoopTicks >= 5, `event loop was not responsive while awaiting cancel; ticks=${eventLoopTicks}`);
+            assert.strictEqual(task.state, TaskState.RUNNING, `task changed state before cleanup completed: ${task.state}`);
+
+            // execute() has already returned true by now. The in-flight cancellation
+            // must suppress the normal SUCCESS transition until cleanup finishes.
+            await startPromise;
+            assert.strictEqual(task.state, TaskState.RUNNING, `execute raced task to terminal state during cancellation: ${task.state}`);
+
+            releaseCancel();
+            await stopPromise;
+            clearInterval(ticker);
+
+            const elapsedMs = Date.now() - stopStartedAt;
+            assert.strictEqual(task.state, TaskState.CANCELLED, `expected CANCELLED after cleanup, got ${task.state}`);
+            assert.ok(elapsedMs >= 180, `stop did not actually await cleanup: ${elapsedMs}ms`);
+
+            console.log(`AWAITED_STOP_PASS elapsedMs=${elapsedMs} eventLoopTicks=${eventLoopTicks} finalState=${task.state}`);
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
+          '@ | Set-Content -Path awaited_stop_smoke.js -Encoding UTF8
+          node awaited_stop_smoke.js
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install SeleniumBase runtime
         shell: pwsh
@@ -233,7 +312,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-oopif-ui-close-isolation-logs
+          name: windows-awaited-stop-ui-close-isolation-logs
           path: |
             *.python.stdout.log
             *.python.stderr.log
