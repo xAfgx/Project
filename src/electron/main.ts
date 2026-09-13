@@ -656,7 +656,7 @@ ipcMain.handle("stop-task", async (_event, taskId: string) => {
   try {
     paymentSessions.delete(taskId);
     await closeVisibleProductMonitorBrowser(taskId);
-    orchestrator.cancelTask(taskId);
+    await orchestrator.cancelTask(taskId);
     const task = orchestrator.getTask(taskId);
     commerceMonitor.resetTask(taskId);
     broadcastTaskUpdate(task);
@@ -838,7 +838,9 @@ app.whenReady().then(async () => {
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    dialog.showErrorBox("ARES Startfehler", `Backend/SQLite konnte nicht initialisiert werden.\n\n${message}`);
+    dialog.showErrorBox("ARES Startfehler", `Backend/SQLite konnte nicht initialisiert werden.\
+\
+${message}`);
     app.quit();
   }
 });
