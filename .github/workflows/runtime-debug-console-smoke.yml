@@ -1,0 +1,32 @@
+name: Runtime debug console smoke
+
+on:
+  push:
+    branches:
+      - smoke/windows-node-hardcrash
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm ci
+
+      - name: Build backend
+        shell: pwsh
+        run: npm run build:backend
+
+      - name: Build Angular UI
+        shell: pwsh
+        run: npm run build:ui
