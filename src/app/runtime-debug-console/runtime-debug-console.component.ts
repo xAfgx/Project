@@ -36,39 +36,41 @@ export class RuntimeDebugConsoleComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     const api = (window as any).ares;
 
-    if (api?.onTaskStatusUpdate) {
-      this.unsubscribeTask = api.onTaskStatusUpdate((task: any) => {
-        this.enqueue({
-          source: "TASK",
-          event: "task.status",
-          level: task?.lastError ? "warn" : "info",
-          taskId: String(task?.id ?? "") || undefined,
-          message: `${String(task?.state ?? "UNKNOWN")}${task?.lastError ? ` · ${String(task.lastError)}` : ""}`
+    this.zone.runOutsideAngular(() => {
+      if (api?.onTaskStatusUpdate) {
+        this.unsubscribeTask = api.onTaskStatusUpdate((task: any) => {
+          this.enqueue({
+            source: "TASK",
+            event: "task.status",
+            level: task?.lastError ? "warn" : "info",
+            taskId: String(task?.id ?? "") || undefined,
+            message: `${String(task?.state ?? "UNKNOWN")}${task?.lastError ? ` · ${String(task.lastError)}` : ""}`
+          });
         });
-      });
-    }
+      }
 
-    if (api?.onProductMonitorUpdate) {
-      this.unsubscribeMonitor = api.onProductMonitorUpdate((payload: any) => {
-        const taskId = String(payload?.taskId ?? "") || undefined;
-        const eventName = payload?.gateEvent
-          ? "monitor.gate"
-          : payload?.event
-            ? "monitor.event"
-            : payload?.browserMonitor
-              ? "monitor.browser"
-              : "monitor.update";
-        const detail = payload?.gateEvent?.type
-          ?? payload?.event?.type
-          ?? payload?.browserMonitor?.status
-          ?? "update";
-        this.enqueue({ source: "MONITOR", event: eventName, level: "info", taskId, message: String(detail) });
-      });
-    }
+      if (api?.onProductMonitorUpdate) {
+        this.unsubscribeMonitor = api.onProductMonitorUpdate((payload: any) => {
+          const taskId = String(payload?.taskId ?? "") || undefined;
+          const eventName = payload?.gateEvent
+            ? "monitor.gate"
+            : payload?.event
+              ? "monitor.event"
+              : payload?.browserMonitor
+                ? "monitor.browser"
+                : "monitor.update";
+          const detail = payload?.gateEvent?.type
+            ?? payload?.event?.type
+            ?? payload?.browserMonitor?.status
+            ?? "update";
+          this.enqueue({ source: "MONITOR", event: eventName, level: "info", taskId, message: String(detail) });
+        });
+      }
 
-    // UI-only observation. Capture phase means this never changes click handling.
-    document.addEventListener("click", this.onDocumentClick, { capture: true, passive: true });
-    this.enqueue({ source: "DEBUG", event: "console.ready", level: "info", message: "Live debug stream ready" });
+      // Passive capture observes UI intent without altering click handling or running Angular change detection per click.
+      document.addEventListener("click", this.onDocumentClick, { capture: true, passive: true });
+      this.enqueue({ source: "DEBUG", event: "console.ready", level: "info", message: "Live debug stream ready" });
+    });
   }
 
   ngOnDestroy(): void {
