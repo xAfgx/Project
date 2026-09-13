@@ -1,4 +1,4 @@
-name: Windows OOPIF cleanup ownership isolation
+name: Windows OOPIF UI-close isolation smoke
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  ownership-isolation:
+  ui-close-isolation:
     runs-on: windows-latest
     timeout-minutes: 22
     steps:
@@ -29,56 +29,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements-seleniumbase-cdp.txt
 
-      - name: Prove one-session cleanup never kills sibling Chrome PIDs
+      - name: Test production close RPC and sibling PID isolation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'ares-cleanup-ownership-isolation'
+          $root = Join-Path $env:RUNNER_TEMP 'ares-ui-close-isolation'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
-
-          # Test-only wrapper: keep the real OOPIF worker/runtime, but translate
-          # parent stdin EOF into the existing close path. No tracked Python
-          # production file is modified by this workflow.
-          @'
-          from __future__ import annotations
-          import sys
-          from pathlib import Path
-
-          module_dir = Path.cwd() / 'python' / 'seleniumbase_cdp'
-          sys.path.insert(0, str(module_dir))
-          import task_browser_worker_oopif as oopif
-
-          base = oopif.impl.base
-          original_reader = base.command_reader
-          original_run = base.run
-
-          def eof_reader(target):
-              try:
-                  return original_reader(target)
-              finally:
-                  target.put({"type": "__parent_eof__", "requestId": ""})
-
-          def eof_aware_run(start):
-              old_reader = base.command_reader
-
-              def translated_reader(target):
-                  class QueueProxy:
-                      def put(self, value):
-                          if isinstance(value, dict) and value.get("type") == "__parent_eof__":
-                              target.put({"type": "close", "requestId": "parent-eof-isolation-smoke"})
-                          else:
-                              target.put(value)
-                  return eof_reader(QueueProxy())
-
-              base.command_reader = translated_reader
-              try:
-                  return original_run(start)
-              finally:
-                  base.command_reader = old_reader
-
-          base.run = eof_aware_run
-          raise SystemExit(oopif.main())
-          '@ | Set-Content -Path oopif_eof_wrapper.py -Encoding UTF8
 
           @'
           const { spawn } = require('child_process');
@@ -90,43 +46,75 @@ jobs:
           const pythonExe = process.env.pythonLocation
             ? path.join(process.env.pythonLocation, 'python.exe')
             : 'python';
+          const prefix = slot;
+          const closeRequest = `${prefix}.close.request`;
+          const closeSent = `${prefix}.close.sent`;
+          const closeAck = `${prefix}.close.ack`;
+          const exitFile = `${prefix}.python.exit`;
+          const readyFile = `${prefix}.ready.json`;
+          const stdoutFile = `${prefix}.python.stdout.log`;
+          const stderrFile = `${prefix}.python.stderr.log`;
 
-          const child = spawn(pythonExe, ['-u', 'oopif_eof_wrapper.py'], {
+          const child = spawn(pythonExe, ['-u', 'python/seleniumbase_cdp/task_browser_worker_oopif.py'], {
             stdio: ['pipe', 'pipe', 'pipe'],
-            detached: true,
             windowsHide: true,
             env: { ...process.env, PYTHONUNBUFFERED: '1' }
           });
 
-          fs.writeFileSync(`${slot}.python.pid`, String(child.pid));
-          child.stdout.pipe(fs.createWriteStream(`${slot}.python.stdout.log`, { flags: 'a' }));
-          child.stderr.pipe(fs.createWriteStream(`${slot}.python.stderr.log`, { flags: 'a' }));
+          fs.writeFileSync(`${prefix}.python.pid`, String(child.pid));
+          const out = fs.createWriteStream(stdoutFile, { flags: 'a' });
+          const err = fs.createWriteStream(stderrFile, { flags: 'a' });
+          let stdoutBuffer = '';
+          let closeWasSent = false;
+
+          child.stdout.setEncoding('utf8');
+          child.stdout.on('data', chunk => {
+            const text = String(chunk);
+            out.write(text);
+            stdoutBuffer += text;
+            const lines = stdoutBuffer.split(/\r?\n/);
+            stdoutBuffer = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('ARES_SB_TASK\t')) continue;
+              try {
+                const msg = JSON.parse(line.slice('ARES_SB_TASK\t'.length));
+                if (msg.type === 'ready') fs.writeFileSync(readyFile, JSON.stringify(msg));
+                if (msg.type === 'closed') fs.writeFileSync(closeAck, String(Date.now()));
+              } catch {}
+            }
+          });
+          child.stderr.pipe(err);
+          child.on('exit', (code, signal) => {
+            fs.writeFileSync(exitFile, JSON.stringify({ code, signal, at: Date.now() }));
+          });
+
           child.stdin.write(JSON.stringify({
             type: 'start',
-            requestId: `ownership-start-${slot}`,
-            taskId: `ownership-task-${slot}`,
+            requestId: `start-${slot}`,
+            taskId: `ui-close-task-${slot}`,
             profileDir,
             headless: true,
             browserArgs: []
           }) + '\n');
 
-          setInterval(() => {}, 1000);
-          '@ | Set-Content -Path ownership_parent.js -Encoding UTF8
+          setInterval(() => {
+            if (closeWasSent || !fs.existsSync(closeRequest)) return;
+            closeWasSent = true;
+            fs.writeFileSync(closeSent, String(Date.now()));
+            child.stdin.write(JSON.stringify({ type: 'close', requestId: `ui-close-${slot}` }) + '\n');
+          }, 50);
 
-          function Get-ProfileChromeProcesses([string]$profile) {
+          setInterval(() => {}, 1000);
+          '@ | Set-Content -Path ui_close_parent.js -Encoding UTF8
+
+          function Get-ProfileChromePids([string]$profile) {
             return @(
               Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
                   $_.Name -match '^(chrome|chromium).*\.exe$' -and
                   $_.CommandLine -and
                   $_.CommandLine.Contains($profile)
-                }
-            )
-          }
-
-          function Get-ProfileChromePids([string]$profile) {
-            return @(
-              Get-ProfileChromeProcesses $profile |
+                } |
                 ForEach-Object { [int]$_.ProcessId } |
                 Sort-Object -Unique
             )
@@ -136,156 +124,122 @@ jobs:
             $slot = "$round-$name"
             $profile = Join-Path $root "profile-$slot"
             New-Item -ItemType Directory -Force -Path $profile | Out-Null
-
-            $parent = Start-Process node -ArgumentList @('ownership_parent.js',$slot,$profile) -PassThru -RedirectStandardOutput "$slot.node.stdout.log" -RedirectStandardError "$slot.node.stderr.log"
+            $parent = Start-Process node -ArgumentList @('ui_close_parent.js',$slot,$profile) -PassThru -RedirectStandardOutput "$slot.node.stdout.log" -RedirectStandardError "$slot.node.stderr.log"
+            $readyFile = "$slot.ready.json"
             $pidFile = "$slot.python.pid"
-            $stdoutFile = "$slot.python.stdout.log"
             $stderrFile = "$slot.python.stderr.log"
             $deadline = (Get-Date).AddMinutes(3)
-            $ready = $null
-
-            while ((Get-Date) -lt $deadline) {
-              if ((Test-Path $pidFile) -and (Test-Path $stdoutFile)) {
-                $line = Get-Content $stdoutFile -ErrorAction SilentlyContinue |
-                  Where-Object { $_ -match '"type"\s*:\s*"ready"' } |
-                  Select-Object -Last 1
-                if ($line) {
-                  $ready = (($line -replace '^ARES_SB_TASK\s*','') | ConvertFrom-Json)
-                  break
-                }
-              }
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $readyFile)) {
               if ($parent.HasExited) { break }
-              Start-Sleep -Milliseconds 250
+              Start-Sleep -Milliseconds 100
             }
-
-            if (-not $ready) {
-              Write-Host "--- $slot stderr ---"
+            if (-not (Test-Path $readyFile)) {
               if (Test-Path $stderrFile) { Get-Content $stderrFile }
               throw "$slot did not become ready"
             }
-
+            $ready = Get-Content $readyFile | ConvertFrom-Json
             $pythonPid = [int](Get-Content $pidFile)
             $pythonProc = Get-Process -Id $pythonPid -ErrorAction Stop
-            $browserPid = [int]$ready.pid
-
-            # Give Chromium a short settle window so the ownership snapshot is
-            # not taken while its normal startup process tree is still forming.
             Start-Sleep -Seconds 2
-            $chromePids = @(Get-ProfileChromePids $profile)
-            if ($chromePids.Count -lt 1) {
-              throw "$slot had no profile-owned Chrome PIDs after READY"
-            }
-
-            Write-Host "SESSION_READY slot=$slot node=$($parent.Id) python=$pythonPid browser=$browserPid chromePids=$($chromePids -join ',')"
+            $pids = @(Get-ProfileChromePids $profile)
+            if ($pids.Count -lt 1) { throw "$slot had no Chrome PIDs" }
+            Write-Host "SESSION_READY slot=$slot node=$($parent.Id) python=$pythonPid browser=$([int]$ready.pid) chromePids=$($pids -join ',')"
             return [pscustomobject]@{
-              Slot = $slot
-              Name = $name
-              Profile = $profile
-              Parent = $parent
-              PythonPid = $pythonPid
-              PythonProc = $pythonProc
-              BrowserPid = $browserPid
-              BeforePids = $chromePids
+              Slot=$slot; Profile=$profile; Parent=$parent; PythonPid=$pythonPid; PythonProc=$pythonProc; BrowserPid=[int]$ready.pid; BeforePids=$pids
             }
           }
 
           function Assert-SiblingUnchanged($session, [string]$phase) {
             $session.Parent.Refresh()
             $session.PythonProc.Refresh()
-            if ($session.Parent.HasExited) {
-              throw "$phase sibling $($session.Slot) Node parent unexpectedly exited"
-            }
-            if ($session.PythonProc.HasExited) {
-              throw "$phase sibling $($session.Slot) Python unexpectedly exited"
-            }
-
-            $afterPids = @(Get-ProfileChromePids $session.Profile)
-            $missing = @($session.BeforePids | Where-Object { $_ -notin $afterPids })
-            $deadDirect = @(
-              $session.BeforePids | Where-Object {
-                $null -eq (Get-Process -Id $_ -ErrorAction SilentlyContinue)
-              }
-            )
-
-            Write-Host "SIBLING_CHECK phase=$phase slot=$($session.Slot) before=$($session.BeforePids -join ',') after=$($afterPids -join ',') missing=$($missing -join ',') deadDirect=$($deadDirect -join ',')"
-
-            if ($missing.Count -gt 0 -or $deadDirect.Count -gt 0) {
-              throw "$phase ownership violation: sibling $($session.Slot) lost Chrome PID(s): missing=$($missing -join ',') dead=$($deadDirect -join ',')"
+            if ($session.Parent.HasExited) { throw "$phase sibling $($session.Slot) Node parent exited" }
+            if ($session.PythonProc.HasExited) { throw "$phase sibling $($session.Slot) Python exited" }
+            $after = @(Get-ProfileChromePids $session.Profile)
+            $missing = @($session.BeforePids | Where-Object { $_ -notin $after })
+            $dead = @($session.BeforePids | Where-Object { $null -eq (Get-Process -Id $_ -ErrorAction SilentlyContinue) })
+            Write-Host "SIBLING_CHECK phase=$phase slot=$($session.Slot) before=$($session.BeforePids -join ',') after=$($after -join ',') missing=$($missing -join ',') dead=$($dead -join ',')"
+            if ($missing.Count -gt 0 -or $dead.Count -gt 0) {
+              throw "$phase sibling ownership violation for $($session.Slot): missing=$($missing -join ',') dead=$($dead -join ',')"
             }
           }
 
-          function Assert-CrashedSessionClean($session, [string]$phase) {
+          function Request-UiClose($session, [string]$phase) {
+            $requestFile = "$($session.Slot).close.request"
+            $sentFile = "$($session.Slot).close.sent"
+            $ackFile = "$($session.Slot).close.ack"
+            $exitFile = "$($session.Slot).python.exit"
+            Set-Content -Path $requestFile -Value 'close' -Encoding ascii
+            $start = Get-Date
+            $deadline = $start.AddSeconds(25)
+            $remaining = @($session.BeforePids)
+            while ((Get-Date) -lt $deadline) {
+              $remaining = @(Get-ProfileChromePids $session.Profile)
+              $session.PythonProc.Refresh()
+              if ($remaining.Count -eq 0 -and $session.PythonProc.HasExited) { break }
+              Start-Sleep -Milliseconds 100
+            }
+            $elapsed = [int]((Get-Date) - $start).TotalMilliseconds
+            $remaining = @(Get-ProfileChromePids $session.Profile)
             $session.PythonProc.Refresh()
             $pythonAlive = -not $session.PythonProc.HasExited
-            $remaining = @(Get-ProfileChromePids $session.Profile)
             $browserAlive = $null -ne (Get-Process -Id $session.BrowserPid -ErrorAction SilentlyContinue)
-
-            Write-Host "CRASHED_CHECK phase=$phase slot=$($session.Slot) pythonAlive=$pythonAlive browserAlive=$browserAlive remainingChrome=$($remaining -join ',')"
-
-            if ($pythonAlive) {
-              throw "$phase crashed session $($session.Slot) Python was still alive"
-            }
-            if ($browserAlive -or $remaining.Count -gt 0) {
-              throw "$phase crashed session $($session.Slot) retained Chrome PID(s): $($remaining -join ',')"
-            }
+            $ack = Test-Path $ackFile
+            $sent = Test-Path $sentFile
+            $exited = Test-Path $exitFile
+            $session.Parent.Refresh()
+            $parentAlive = -not $session.Parent.HasExited
+            Write-Host "UI_CLOSE_RESULT phase=$phase slot=$($session.Slot) elapsedMs=$elapsed sent=$sent ack=$ack pythonAlive=$pythonAlive browserAlive=$browserAlive remainingChrome=$($remaining -join ',') nodeParentAlive=$parentAlive exitMarker=$exited"
+            if (-not $sent) { throw "$phase close request was never sent" }
+            if (-not $ack) { throw "$phase Python never acknowledged close" }
+            if ($pythonAlive) { throw "$phase Python still alive after close" }
+            if ($browserAlive -or $remaining.Count -gt 0) { throw "$phase Chrome still alive after close: $($remaining -join ',')" }
+            if (-not $parentAlive) { throw "$phase Node parent died during normal UI-style close" }
+            return $elapsed
           }
 
-          $roundResults = @()
+          $results = @()
           foreach ($round in 1..3) {
             Write-Host "=== ROUND $round ==="
             $a = Start-Session "r$round" 'A'
             $b = Start-Session "r$round" 'B'
             $c = Start-Session "r$round" 'C'
-
-            # Snapshot all sibling ownership PIDs only after all three sessions
-            # are fully started and settled.
+            $a.BeforePids = @(Get-ProfileChromePids $a.Profile)
             $b.BeforePids = @(Get-ProfileChromePids $b.Profile)
             $c.BeforePids = @(Get-ProfileChromePids $c.Profile)
             Write-Host "OWNERSHIP_SNAPSHOT round=$round A=$($a.BeforePids -join ',') B=$($b.BeforePids -join ',') C=$($c.BeforePids -join ',')"
 
-            # Crash ONLY A's Node parent. B and C must remain completely untouched.
-            Write-Host "CRASH_ONLY round=$round target=A node=$($a.Parent.Id)"
-            Stop-Process -Id $a.Parent.Id -Force -ErrorAction Stop
+            $aMs = Request-UiClose $a "round${round}-A"
+            Assert-SiblingUnchanged $b "round${round}-afterA"
+            Assert-SiblingUnchanged $c "round${round}-afterA"
 
-            Start-Sleep -Seconds 5
-            Assert-CrashedSessionClean $a "round${round}-after5s"
-            Assert-SiblingUnchanged $b "round${round}-after5s"
-            Assert-SiblingUnchanged $c "round${round}-after5s"
+            $bMs = Request-UiClose $b "round${round}-B"
+            Assert-SiblingUnchanged $c "round${round}-afterB"
 
-            # Hold another window to catch delayed/over-broad cleanup.
-            Start-Sleep -Seconds 5
-            Assert-CrashedSessionClean $a "round${round}-after10s"
-            Assert-SiblingUnchanged $b "round${round}-after10s"
-            Assert-SiblingUnchanged $c "round${round}-after10s"
+            $cMs = Request-UiClose $c "round${round}-C"
 
-            # Cleanup the two surviving test sessions by dropping their own
-            # control pipes; the same EOF path must only clean their own profiles.
-            Stop-Process -Id $b.Parent.Id -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-            Assert-CrashedSessionClean $b "round${round}-cleanupB"
-            Assert-SiblingUnchanged $c "round${round}-afterBcleanup"
-
-            Stop-Process -Id $c.Parent.Id -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-            Assert-CrashedSessionClean $c "round${round}-cleanupC"
-
-            $roundResults += [pscustomobject]@{ Round=$round; Passed=$true }
+            foreach ($parent in @($a.Parent,$b.Parent,$c.Parent)) {
+              Stop-Process -Id $parent.Id -Force -ErrorAction SilentlyContinue
+            }
+            $results += [pscustomobject]@{ Round=$round; Ams=$aMs; Bms=$bMs; Cms=$cMs }
           }
 
-          Write-Host '=== OWNERSHIP ISOLATION SUMMARY ==='
-          foreach ($result in $roundResults) {
-            Write-Host "OWNERSHIP_RESULT round=$($result.Round) passed=$($result.Passed)"
+          Write-Host '=== UI CLOSE ISOLATION SUMMARY ==='
+          foreach ($r in $results) {
+            Write-Host "UI_CLOSE_PASS round=$($r.Round) Ams=$($r.Ams) Bms=$($r.Bms) Cms=$($r.Cms)"
           }
-          Write-Host 'OWNERSHIP_ISOLATION_PASS: no Chrome PID from B/C disappeared during another session cleanup.'
+          Write-Host 'UI_CLOSE_ISOLATION_PASS: close RPC removed only the targeted session Chrome/Python; sibling Chrome PIDs remained alive.'
 
-      - name: Upload ownership smoke logs
+      - name: Upload UI-close smoke logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-oopif-cleanup-ownership-logs
+          name: windows-oopif-ui-close-isolation-logs
           path: |
             *.python.stdout.log
             *.python.stderr.log
             *.node.stdout.log
             *.node.stderr.log
+            *.python.exit
+            *.close.sent
+            *.close.ack
           if-no-files-found: ignore
