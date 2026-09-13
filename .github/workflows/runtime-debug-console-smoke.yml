@@ -27,6 +27,6 @@ jobs:
         shell: pwsh
         run: npm run build:backend
 
-      - name: Build Angular UI
+      - name: Build Angular UI (development config)
         shell: pwsh
-        run: npm run build:ui
+        run: npm run build:ui -- --configuration development
