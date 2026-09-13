@@ -16,6 +16,7 @@ import { normalizeDiscoveryKeywords } from "../monitor/early-gate";
 import type { ProductObservation } from "../monitor/models";
 import type { ReleaseJourney } from "../commerce/release-discovery/release-journey";
 import { EXCLUDED_MARKETING_SELECTOR } from "../commerce/mediamarkt/release-journey";
+import { runAccountRegistration } from "./account-registration-runner";
 import { LiveChallengeHandler } from "../challenges/live-challenge-handler";
 import { GhostCursorUiInteractionHelper } from "./ui-interaction-helper";
 
@@ -152,16 +153,17 @@ export class MediaMarktTaskExecutor implements ITaskExecutor {
       };
 
       // Isolated account-registration lane: no discovery, no cart, no checkout.
-      const registration = asRecord(task.config.data?.["accountRegistration"]);
-      if (registration) {
-        process.stderr.write(`[JOURNEY] mediamarkt account-registration start email=${String(registration["email"] ?? "")}\n`);
-        const result = journey.registerAccount
-          ? await journey.registerAccount(page, shop, registration, session.controller.signal)
-          : { status: "failed" as const, message: "Journey unterstützt keine Registrierung." };
-        task.config.data = { ...(task.config.data ?? {}), accountRegistrationResult: result };
+      // Generic runner: a no-op for every task without accountRegistration data.
+      const registrationResult = await runAccountRegistration({
+        task,
+        page,
+        shop,
+        journey,
+        signal: session.controller.signal
+      });
+      if (registrationResult !== undefined) {
         this.emit(task);
-        process.stderr.write(`[JOURNEY] mediamarkt account-registration ${result.status}: ${result.message}\n`);
-        return result.status === "confirmed";
+        return registrationResult;
       }
 
       this.markStage(task, "discovery");

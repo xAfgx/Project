@@ -3,6 +3,7 @@ import type { ProductObservation, ProductQuery } from "../../monitor/models";
 import { GenericHtmlProductApiAdapter } from "./generic-html-product-api-adapter";
 import { NodeJsonHttpClient } from "./http-json-client";
 import { NodeTextHttpClient } from "./http-text-client";
+import { MediaMarktProductApiAdapter } from "./mediamarkt-product-api-adapter";
 import { ShopifyProductApiAdapter } from "./shopify-product-api-adapter";
 import type {
   CommerceProductApiAdapter,
@@ -25,6 +26,10 @@ export class CommerceProductApiRouter {
     if (includeBuiltIns) {
       this.register(new ShopifyProductApiAdapter(http));
       this.register(new WooCommerceProductApiAdapter(http));
+      // MediaMarkt uses its public GraphQL API (Apollo persisted queries) via a
+      // curl_cffi sidecar. Purely additive: only the "mediamarkt" platform is
+      // affected, and any failure falls back to the generic HTML monitor below.
+      this.register(new MediaMarktProductApiAdapter());
     }
   }
 
