@@ -38,6 +38,10 @@ interface ModuleView {
   accent: string;
   platform: CommercePlatform;
   modes: ModuleModeView[];
+  /** Single-retailer modules bring their storefront so no manual shop pick is needed. */
+  defaultShop?: { id: string; name: string; baseUrl: string };
+  /** Direct mode runs one browser task immediately (no monitor spawn). */
+  directLane?: boolean;
 }
 
 interface ShopView {
@@ -145,8 +149,10 @@ export class AppComponent implements OnInit, OnDestroy {
   proxies: AresProxy[] = [];
   selectedProfileId = "";
   selectedShopId = "";
+  /** Store URL for generic platform modules (e.g. Shopify) without a shop yet. */
+  moduleShopUrl = "";
   commercePlatforms: CommercePlatform[] = [...COMMERCE_PLATFORMS];
-  executorPlatforms: CommercePlatform[] = ["shopify"];
+  executorPlatforms: CommercePlatform[] = ["shopify", "mediamarkt"];
 
   newProfile: ProfileView = this.emptyProfile();
   newProxy: AresProxy = this.emptyProxy();
@@ -191,6 +197,7 @@ export class AppComponent implements OnInit, OnDestroy {
       tagline: "Queue · Captcha · Guest Checkout",
       accent: "#e60012",
       platform: "pokemon-center",
+      defaultShop: { id: "pokemon-center", name: "Pokémon Center", baseUrl: "https://www.pokemoncenter.com" },
       modes: [
         { id: "monitor", label: "Nur Monitoring", hint: "Produkt überwachen und melden, ohne Checkout-Profil und ohne Kaufpfad." },
         { id: "direct", label: "Direkt zum Checkout", hint: "Produkt überwachen und beim Verfügbarwerden sofort in den Checkout – ohne Queue-Monitor." },
@@ -206,6 +213,19 @@ export class AppComponent implements OnInit, OnDestroy {
       modes: [
         { id: "monitor", label: "Nur Monitoring", hint: "Shopify-Produkte überwachen und Signale sammeln, ohne Checkout zu starten." },
         { id: "direct", label: "Direct Task", hint: "Ein Browser, direkter Checkout-Flow" }
+      ]
+    },
+    {
+      id: "mediamarkt",
+      name: "MediaMarkt",
+      tagline: "Suche · Warenkorb · Gast-Checkout",
+      accent: "#e2001a",
+      platform: "mediamarkt",
+      defaultShop: { id: "mediamarkt", name: "MediaMarkt", baseUrl: "https://www.mediamarkt.de" },
+      directLane: true,
+      modes: [
+        { id: "monitor", label: "Nur Monitoring", hint: "MediaMarkt-Produkte überwachen und Signale sammeln, ohne Checkout zu starten." },
+        { id: "direct", label: "Direkt zum Checkout", hint: "Ein Browser: Suche → Produkt → Warenkorb → Gast-Checkout. Muss Popups (Cookies, Zwischenschritte) generisch wegstecken." }
       ]
     }
   ];
@@ -411,7 +431,19 @@ export class AppComponent implements OnInit, OnDestroy {
     return matching.length ? matching : this.shops;
   }
 
-  openModule(moduleId: string): void {
+  /** Registered shops that match the open module's platform. */
+  get moduleShopOptions(): ShopView[] {
+    const module = this.selectedModule;
+    if (!module) return [];
+    return this.shops.filter(shop => shop.platform === module.platform);
+  }
+
+  /** The storefront the open module is bound to (auto-selected/registered). */
+  get selectedModuleShop(): ShopView | undefined {
+    return this.moduleShopOptions.find(shop => shop.id === this.selectedShopId) ?? this.moduleShopOptions[0];
+  }
+
+  async openModule(moduleId: string): Promise<void> {
     const module = this.modules.find(item => item.id === moduleId);
     if (!module) return;
     const previousModuleId = this.selectedModuleId;
@@ -423,10 +455,29 @@ export class AppComponent implements OnInit, OnDestroy {
     if (!this.taskName.trim() || (previousModuleId !== module.id && this.taskName.endsWith(" Monitor"))) {
       this.taskName = `${module.name} Monitor`;
     }
-    const shop = this.shops.find(item => item.platform === module.platform);
+
+    const defaultShop = module.defaultShop;
+    let shop = defaultShop
+      ? this.shops.find(item => item.id === defaultShop.id)
+      : undefined;
+    shop ??= this.shops.find(item => item.platform === module.platform);
+    // Retailer modules own their storefront: register the module default once,
+    // so the operator never has to pick a shop inside a single-retailer module.
+    if (!shop && defaultShop) {
+      const result = await this.electron.registerShop({ ...defaultShop, platform: module.platform });
+      if (!result.success) {
+        this.error = result.error || this.i18n.t("Standard-Shop konnte nicht registriert werden.");
+      }
+      await this.loadShops();
+      shop = this.shops.find(item => item.id === defaultShop.id)
+        ?? this.shops.find(item => item.platform === module.platform);
+    }
     if (shop) {
       this.selectedShopId = shop.id;
       this.onShopSelected();
+    } else {
+      // Generic platform module (e.g. Shopify): ask for the store URL inline.
+      this.moduleShopUrl = "";
     }
   }
 
@@ -1392,6 +1443,27 @@ export class AppComponent implements OnInit, OnDestroy {
     const earlyGate = this.monitorStrategyMode === "early-gate";
     const needsCheckout = earlyGate || this.taskMode === "auto-checkout";
 
+    // Generic platform modules (e.g. Shopify) collect the store URL inline:
+    // register it on first use so the Shops tab stays optional.
+    if (!this.selectedShopId && this.selectedModule && this.moduleShopUrl.trim()) {
+      const result = await this.electron.registerShop({
+        id: this.selectedModule.id,
+        name: this.selectedModule.name,
+        baseUrl: this.moduleShopUrl.trim(),
+        platform: this.selectedModule.platform
+      });
+      if (!result.success) {
+        this.error = result.error || this.i18n.t("Store konnte nicht registriert werden.");
+        return;
+      }
+      await this.loadShops();
+      const shop = this.shops.find(item => item.platform === this.selectedModule?.platform);
+      if (shop) {
+        this.selectedShopId = shop.id;
+        this.onShopSelected();
+      }
+    }
+
     if (!this.taskName.trim() || !this.selectedShopId) {
       this.error = this.i18n.t("Task-Name und Shop sind erforderlich.");
       return;
@@ -1424,7 +1496,8 @@ export class AppComponent implements OnInit, OnDestroy {
       return;
     }
 
-    const prefix = earlyGate ? "gate" : this.taskMode === "auto-checkout" ? "auto" : "monitor";
+    const directLane = Boolean(this.selectedModule?.directLane) && !earlyGate && this.taskMode === "auto-checkout";
+    const prefix = earlyGate ? "gate" : directLane ? "direct" : this.taskMode === "auto-checkout" ? "auto" : "monitor";
     const taskId = `${prefix}_${Date.now()}`;
     const intervalSeconds = Math.max(1, Math.floor(Number(this.taskIntervalSeconds) || 30));
     const proxySelection: ProxySelection = {
@@ -1456,18 +1529,31 @@ export class AppComponent implements OnInit, OnDestroy {
           ...runtimeBrowser
         };
 
-    const data: Record<string, unknown> = {
-      monitorIntervalMs: intervalSeconds * 1_000,
-      monitorAction,
-      monitorStrategy: earlyGate
-        ? {
-            mode: "early-gate",
-            productName: this.earlyGateProductName.trim(),
-            discoveryKeywords: [...this.discoveryKeywords]
-          }
-        : { mode: "product-monitor" }
-    };
-    if (!earlyGate) data["productCriteria"] = { searchTerm: this.searchTerm.trim() };
+    // Single-retailer modules with a direct lane (MediaMarkt) run one browser
+    // task immediately: search -> product -> cart -> checkout. No monitor
+    // parent, no monitor browser fallback.
+    const data: Record<string, unknown> = directLane
+      ? {
+          monitorIntervalMs: intervalSeconds * 1_000,
+          profileId: this.selectedProfileId,
+          searchTerm: this.searchTerm.trim(),
+          browserConfig: { headless: this.headless },
+          proxySelection,
+          monitorAction,
+          monitorStrategy: { mode: "product-monitor" }
+        }
+      : {
+          monitorIntervalMs: intervalSeconds * 1_000,
+          monitorAction,
+          monitorStrategy: earlyGate
+            ? {
+                mode: "early-gate",
+                productName: this.earlyGateProductName.trim(),
+                discoveryKeywords: [...this.discoveryKeywords]
+              }
+            : { mode: "product-monitor" }
+        };
+    if (!earlyGate && !directLane) data["productCriteria"] = { searchTerm: this.searchTerm.trim() };
 
     const result = await this.electron.createTask({
       id: taskId,
@@ -1491,9 +1577,11 @@ export class AppComponent implements OnInit, OnDestroy {
 
     this.info = earlyGate
       ? this.i18n.t("Early-Gate-Task {id} erstellt. ARES startet den Browser erst beim passiven Gate-Signal.", { id: result.taskId })
-      : this.taskMode === "auto-checkout"
-        ? this.i18n.t("Auto-Checkout-Task {id} erstellt. Bei Verfügbarkeit startet ARES genau eine isolierte Checkout-Session.", { id: result.taskId })
-        : this.i18n.t("Monitoring-Task {id} erstellt. Chromium wird nur bei leerem/unklarem Fast-Path zugeschaltet.", { id: result.taskId });
+      : directLane
+        ? this.i18n.t("Direkt-Task {id} erstellt. Ein Browser: Suche → Produkt → Warenkorb → Gast-Checkout.", { id: result.taskId })
+        : this.taskMode === "auto-checkout"
+          ? this.i18n.t("Auto-Checkout-Task {id} erstellt. Bei Verfügbarkeit startet ARES genau eine isolierte Checkout-Session.", { id: result.taskId })
+          : this.i18n.t("Monitoring-Task {id} erstellt. Chromium wird nur bei leerem/unklarem Fast-Path zugeschaltet.", { id: result.taskId });
     this.taskName = "";
     this.searchTerm = "";
     this.earlyGateProductName = "";
@@ -1925,7 +2013,7 @@ export class AppComponent implements OnInit, OnDestroy {
       shopware: "Shopware", magento: "Magento / Adobe Commerce", bigcommerce: "BigCommerce",
       prestashop: "PrestaShop", squarespace: "Squarespace Commerce", ecwid: "Ecwid",
       lightspeed: "Lightspeed eCom", commercetools: "commercetools",
-      "salesforce-commerce-cloud": "Salesforce Commerce Cloud", "pokemon-center": "Pokémon Center", custom: this.i18n.t("Custom / Sonstige")
+      "salesforce-commerce-cloud": "Salesforce Commerce Cloud", "pokemon-center": "Pokémon Center", mediamarkt: "MediaMarkt", custom: this.i18n.t("Custom / Sonstige")
     };
     return labels[platform] || platform;
   }

@@ -17,8 +17,25 @@ const METHODS: MethodDescriptor[] = [
   { method: "klarna", patterns: [/klarna/i] }
 ];
 
+export type CardFieldFill = "holderName" | "cardNumber" | "expiry" | "securityCode";
+
+/** Original shared order; unchanged for every shop that does not opt in. */
+const DEFAULT_CARD_FILL_ORDER: CardFieldFill[] = ["holderName", "cardNumber", "expiry", "securityCode"];
+
 /** Generic checkout payment preparation. It never submits an order. */
 export class CheckoutPaymentPreparer {
+  private readonly securityCodeSelectors: string[];
+  private readonly cardFillOrder: CardFieldFill[];
+
+  /**
+   * Optional, shop-specific additions. All defaults reproduce the existing
+   * behavior, so other shops (Pokémon Center, Shopify) stay byte-identical.
+   */
+  constructor(options: { securityCodeSelectors?: string[]; cardFillOrder?: CardFieldFill[] } = {}) {
+    this.securityCodeSelectors = options.securityCodeSelectors ?? [];
+    this.cardFillOrder = options.cardFillOrder ?? DEFAULT_CARD_FILL_ORDER;
+  }
+
   async prepare(page: Page, session?: CheckoutPaymentSession): Promise<PaymentPreparationResult> {
     const detectedMethods = await this.detectMethods(page);
     const result: PaymentPreparationResult = {
@@ -63,34 +80,7 @@ export class CheckoutPaymentPreparer {
       return result;
     }
 
-    await this.fillCardField(page, "holderName", card.holderName, [
-      'input[autocomplete="cc-name"]',
-      'input[name*="cardholder" i]',
-      'input[name*="card_name" i]',
-      'input[name*="name_on_card" i]'
-    ], result);
-    await this.fillCardField(page, "cardNumber", card.cardNumber, [
-      'input[autocomplete="cc-number"]',
-      'input[name*="cardnumber" i]',
-      'input[name*="card_number" i]',
-      'input[data-card-field="number"]'
-    ], result);
-    const expirySelectsHandled = await this.selectCardExpiry(page, card.expiry, result);
-    if (!expirySelectsHandled) {
-      await this.fillCardField(page, "expiry", card.expiry, [
-        'input[autocomplete="cc-exp"]',
-        'input[name*="expiry" i]',
-        'input[name*="expiration" i]',
-        'input[data-card-field="expiry"]'
-      ], result);
-    }
-    await this.fillCardField(page, "securityCode", card.securityCode, [
-      'input[autocomplete="cc-csc"]',
-      'input[name*="security_code" i]',
-      'input[name*="cvv" i]',
-      'input[name*="cvc" i]',
-      'input[data-card-field="verification_value"]'
-    ], result);
+    await this.fillCardFields(page, card, result);
 
     // A fully prepared card needs no additional payment-field input. The final
     // order click is still controlled separately by the global purchase guard.
@@ -99,6 +89,54 @@ export class CheckoutPaymentPreparer {
       ? "Kartendaten teilweise vorbereitet. Fehlende Felder müssen ergänzt werden; Bestellung wird nicht abgesendet."
       : "Kartendaten vorbereitet. Der finale Submit bleibt separat geschützt.";
     return result;
+  }
+
+  /** Fills the card controls in the configured order (default: shared order). */
+  private async fillCardFields(
+    page: Page,
+    card: NonNullable<CheckoutPaymentSession["card"]>,
+    result: PaymentPreparationResult
+  ): Promise<void> {
+    for (const field of this.cardFillOrder) {
+      if (field === "cardNumber") {
+        await this.fillCardField(page, "cardNumber", card.cardNumber, [
+          'input[autocomplete="cc-number"]',
+          'input[name*="cardnumber" i]',
+          'input[name*="card_number" i]',
+          'input[data-card-field="number"]'
+        ], result);
+        continue;
+      }
+      if (field === "expiry") {
+        const expirySelectsHandled = await this.selectCardExpiry(page, card.expiry, result);
+        if (!expirySelectsHandled) {
+          await this.fillCardField(page, "expiry", card.expiry, [
+            'input[autocomplete="cc-exp"]',
+            'input[name*="expiry" i]',
+            'input[name*="expiration" i]',
+            'input[data-card-field="expiry"]'
+          ], result);
+        }
+        continue;
+      }
+      if (field === "securityCode") {
+        await this.fillCardField(page, "securityCode", card.securityCode, [
+          'input[autocomplete="cc-csc"]',
+          'input[name*="security_code" i]',
+          'input[name*="cvv" i]',
+          'input[name*="cvc" i]',
+          ...this.securityCodeSelectors,
+          'input[data-card-field="verification_value"]'
+        ], result);
+        continue;
+      }
+      await this.fillCardField(page, "holderName", card.holderName, [
+        'input[autocomplete="cc-name"]',
+        'input[name*="cardholder" i]',
+        'input[name*="card_name" i]',
+        'input[name*="name_on_card" i]'
+      ], result);
+    }
   }
 
   private async detectMethods(page: Page): Promise<PaymentMethod[]> {

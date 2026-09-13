@@ -195,6 +195,9 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
       // a waiting room or a DataDome/reCAPTCHA challenge). Solve any captcha
       // that only appears post-redirect before product discovery starts.
       await (page as unknown as { solveCaptcha?: () => Promise<boolean> }).solveCaptcha?.().catch(() => false);
+      // Storefront consent layer (OneTrust & co.) appears after queue+captcha;
+      // dismiss it best-effort before discovery. Captcha handling stays as is.
+      await this.dismissStorefrontConsent(page);
 
       this.markStage(task, "post-queue-discovery", { postQueueDiscoveryAt: new Date().toISOString() });
       this.publishKeywords(session);
@@ -484,6 +487,28 @@ export class EarlyGateBrowserTaskExecutor implements ITaskExecutor {
       await page.waitForTimeout(300).catch(() => undefined);
     } while (Date.now() < deadline);
     return false;
+  }
+
+  /**
+   * Best-effort storefront consent dismissal (OneTrust / MediaMarkt privacy
+   * layer). Additive: it only clicks when a known banner is actually visible,
+   * so the queue and captcha flow above stays untouched.
+   */
+  private async dismissStorefrontConsent(page: Page): Promise<void> {
+    const selectors = [
+      '#onetrust-accept-btn-handler',
+      '#onetrust-reject-all-handler',
+      '[data-test="pwa-consent-layer-accept-all"]',
+      '[data-test="pwa-consent-layer-deny-all"]'
+    ];
+    for (const selector of selectors) {
+      const button = page.locator(selector).first();
+      if (!await button.isVisible({ timeout: 400 }).catch(() => false)) continue;
+      process.stderr.write(`[JOURNEY] storefront consent dismissed (${selector})\n`);
+      await button.click({ timeout: 3_000 }).catch(() => undefined);
+      await page.waitForTimeout(300).catch(() => undefined);
+      return;
+    }
   }
 
   private emit(task: Task): void {

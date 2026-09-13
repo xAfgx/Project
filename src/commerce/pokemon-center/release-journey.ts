@@ -119,7 +119,13 @@ export class PokemonCenterReleaseJourney implements ReleaseJourney {
       if (anchor) {
         const href = await anchor.evaluate((element: Element) => element.getAttribute("href") || "").catch(() => "");
         process.stderr.write(`[JOURNEY] discover click-card href=${href} want=${candidate.observation.url ?? ""}\n`);
-        await new GhostCursorUiInteractionHelper(page).click(anchor);
+        // First move to the card with the native smooth scroll, then click its
+        // live box (the grid lazy-loads and shifts during a pointer animation,
+        // so a pre-measured ghost target can miss). The ghost path is still
+        // played inside the worker's native locator click.
+        await anchor.scrollIntoViewIfNeeded().catch(() => undefined);
+        await page.waitForTimeout(300).catch(() => undefined);
+        await anchor.click({ timeout: 5_000 }).catch(() => undefined);
         process.stderr.write(`[JOURNEY] discover clicked-card url=${page.url()}\n`);
       } else {
         await page.goto(candidate.observation.url!, { waitUntil: "domcontentloaded", timeout: 30_000 });

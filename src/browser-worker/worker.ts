@@ -6,27 +6,39 @@ import type { RuntimeShop } from "./runtime-types";
 import type { ShopifyTaskExecutor as ShopifyExecutorType } from "../shopify/shopify-task-executor";
 import type { ShopifyPurchaseReadyExecutor as ShopifyPurchaseReadyExecutorType } from "../shopify/shopify-purchase-ready-executor";
 import type { EarlyGateBrowserTaskExecutor as EarlyGateExecutorType } from "./early-gate-task-executor";
+import type { MediaMarktTaskExecutor as MediaMarktExecutorType } from "./mediamarkt-task-executor";
 import type { BrowserGateMonitorExecutor as BrowserGateMonitorExecutorType } from "../monitor/browser-gate-monitor-executor";
 import type { AresBrowserRuntime as BrowserCoreType } from "./ares-browser-runtime";
 import type { PokemonCenterReleaseJourney as PokemonCenterJourneyType } from "../commerce/pokemon-center/release-journey";
+import type { MediaMarktReleaseJourney as MediaMarktJourneyType } from "../commerce/mediamarkt/release-journey";
 import { isEarlyGateChildTask, isEarlyGateMonitorTask } from "../monitor/early-gate";
 import { isShopifyRuntimeShop } from "./runtime-types";
 
 const nodeMajor = Number(process.versions.node.split(".")[0] ?? "0");
 if (nodeMajor < 20) { process.stderr.write(`ARES Browser Worker benötigt Node.js 20 oder höher; gefunden: ${process.versions.node}.\n`); process.exit(20); }
 
+// Every Python child (browser session, vision service, captcha runtime) must
+// use UTF-8 for stdio. Windows defaults to the locale codepage (cp1252), and a
+// single checkmark/Umlaut in a log line otherwise kills the worker with a
+// UnicodeEncodeError.
+process.env["PYTHONUTF8"] = "1";
+process.env["PYTHONIOENCODING"] = "utf-8";
+
 const { AresBrowserRuntime } = require("./ares-browser-runtime") as { AresBrowserRuntime: typeof BrowserCoreType; };
 const { ShopifyTaskExecutor } = require("../shopify/shopify-task-executor") as { ShopifyTaskExecutor: typeof ShopifyExecutorType; };
 const { ShopifyPurchaseReadyExecutor } = require("../shopify/shopify-purchase-ready-executor") as { ShopifyPurchaseReadyExecutor: typeof ShopifyPurchaseReadyExecutorType; };
 const { EarlyGateBrowserTaskExecutor } = require("./early-gate-task-executor") as { EarlyGateBrowserTaskExecutor: typeof EarlyGateExecutorType; };
+const { MediaMarktTaskExecutor } = require("./mediamarkt-task-executor") as { MediaMarktTaskExecutor: typeof MediaMarktExecutorType; };
 const { BrowserGateMonitorExecutor } = require("../monitor/browser-gate-monitor-executor") as { BrowserGateMonitorExecutor: typeof BrowserGateMonitorExecutorType; };
 const { PokemonCenterReleaseJourney } = require("../commerce/pokemon-center/release-journey") as { PokemonCenterReleaseJourney: typeof PokemonCenterJourneyType; };
+const { MediaMarktReleaseJourney } = require("../commerce/mediamarkt/release-journey") as { MediaMarktReleaseJourney: typeof MediaMarktJourneyType; };
 
 function send(message: BrowserWorkerResponse): void { process.stdout.write(`${JSON.stringify(message)}\n`); }
 const shops = new Map<string, RuntimeShop>();
 const profiles = new Map<string, AresProfile>();
 const browserCore = new AresBrowserRuntime();
 const pokemonCenterJourney = new PokemonCenterReleaseJourney();
+const mediaMarktJourney = new MediaMarktReleaseJourney();
 
 function stampProfileOwnedBrowserSession(task: any): void {
   const handle = browserCore.getContext(task.id); const profileId = browserCore.getBoundProfileId(task.id);
@@ -39,6 +51,7 @@ const emitTaskUpdate = (task: any) => { stampProfileOwnedBrowserSession(task); s
 const shopifyExecutor = new ShopifyTaskExecutor(shopId => { const shop = shops.get(shopId); return shop && isShopifyRuntimeShop(shop) ? shop : undefined; }, profileId => profiles.get(profileId), browserCore, undefined, emitTaskUpdate);
 const shopifyPurchaseReadyExecutor = new ShopifyPurchaseReadyExecutor(shopifyExecutor, browserCore, emitTaskUpdate);
 const earlyGateExecutor = new EarlyGateBrowserTaskExecutor(shopId => shops.get(shopId), profileId => profiles.get(profileId), shop => pokemonCenterJourney.supports(shop) ? pokemonCenterJourney : undefined, browserCore, emitTaskUpdate);
+const mediaMarktExecutor = new MediaMarktTaskExecutor(shopId => shops.get(shopId), profileId => profiles.get(profileId), shop => mediaMarktJourney.supports(shop) ? mediaMarktJourney : undefined, browserCore, emitTaskUpdate);
 function applyCaptchaConfig(captcha: { mode?: string; keys?: Record<string, string> } | undefined): void {
   const mode = String(captcha?.mode || "").trim().toLowerCase();
   if (mode === "siglip" || mode === "siglip-api" || mode === "api") process.env["ARES_CAPTCHA_MODE"] = mode;
@@ -69,7 +82,8 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
       try {
         const gateMonitor = isEarlyGateMonitorTask(request.task);
         const earlyGateChild = isEarlyGateChildTask(request.task) && !gateMonitor;
-        if (!gateMonitor && !earlyGateChild && !isShopifyRuntimeShop(request.shop)) throw new Error(`Für ${request.shop.platform} ist kein regulärer Browser-Executor registriert.`);
+        const mediaMarktTask = request.shop.platform === "mediamarkt";
+        if (!gateMonitor && !earlyGateChild && !isShopifyRuntimeShop(request.shop) && !mediaMarktTask) throw new Error(`Für ${request.shop.platform} ist kein regulärer Browser-Executor registriert.`);
 
         let success: boolean;
         if (gateMonitor) {
@@ -93,6 +107,7 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
             success = await earlyGateExecutor.execute(request.task, paymentSession, existingHandle);
           }
         } else if (earlyGateChild) success = await earlyGateExecutor.execute(request.task, paymentSession);
+        else if (mediaMarktTask) success = await mediaMarktExecutor.execute(request.task, paymentSession);
         else success = await shopifyPurchaseReadyExecutor.execute(request.task, request.profile, paymentSession);
 
         stampProfileOwnedBrowserSession(request.task);
@@ -105,10 +120,10 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
     }
     if (request.type === "update-discovery-keywords") { const keywords = await earlyGateExecutor.updateDiscoveryKeywords(request.taskId, request.keywords); send({ type: "ack", requestId: request.requestId, keywords }); return; }
     if (request.type === "set-captcha-config") { applyCaptchaConfig(request.captcha); send({ type: "ack", requestId: request.requestId }); return; }
-    if (request.type === "set-final-purchase-permission") { await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(request.allowed === true), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(request.allowed === true)]); send({ type: "ack", requestId: request.requestId, allowFinalPurchase: request.allowed === true }); return; }
-    if (request.type === "cancel") { await Promise.allSettled([browserGateMonitorExecutor.cancelTask(request.taskId), earlyGateExecutor.cancelTask(request.taskId), shopifyPurchaseReadyExecutor.cancelTask(request.taskId)]); browserCore.unbindTaskProfile(request.taskId); send({ type: "ack", requestId: request.requestId }); return; }
+    if (request.type === "set-final-purchase-permission") { await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(request.allowed === true), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(request.allowed === true), mediaMarktExecutor.setFinalPurchaseAllowed(request.allowed === true)]); send({ type: "ack", requestId: request.requestId, allowFinalPurchase: request.allowed === true }); return; }
+    if (request.type === "cancel") { await Promise.allSettled([browserGateMonitorExecutor.cancelTask(request.taskId), earlyGateExecutor.cancelTask(request.taskId), shopifyPurchaseReadyExecutor.cancelTask(request.taskId), mediaMarktExecutor.cancelTask(request.taskId)]); browserCore.unbindTaskProfile(request.taskId); send({ type: "ack", requestId: request.requestId }); return; }
     if (request.type === "health") { const health = await browserCore.health(); send({ type: "health-result", requestId: request.requestId, health: { ...health, startedAt: health.startedAt.toISOString() }, pid: process.pid, nodeVersion: process.versions.node }); return; }
-    if (request.type === "shutdown") { await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(false), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(false)]); await browserGateMonitorExecutor.close(); await earlyGateExecutor.closeAll(); await shopifyPurchaseReadyExecutor.closeAll(); await browserCore.shutdown(); send({ type: "ack", requestId: request.requestId }); setImmediate(() => process.exit(0)); return; }
+    if (request.type === "shutdown") { await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(false), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(false), mediaMarktExecutor.setFinalPurchaseAllowed(false)]); await browserGateMonitorExecutor.close(); await earlyGateExecutor.closeAll(); await shopifyPurchaseReadyExecutor.closeAll(); await mediaMarktExecutor.closeAll(); await browserCore.shutdown(); send({ type: "ack", requestId: request.requestId }); setImmediate(() => process.exit(0)); return; }
     send({ type: "error", requestId: (request as { requestId?: string }).requestId, error: `Unbekannter Anfragetyp: ${(request as { type: string }).type}` });
   } catch (error) { send({ type: "error", requestId: request.requestId, error: error instanceof Error ? error.message : String(error) }); }
 }
@@ -116,7 +131,7 @@ async function handle(request: BrowserWorkerRequest): Promise<void> {
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", line => { if (!line.trim()) return; try { const request = JSON.parse(line) as BrowserWorkerRequest; void handle(request); } catch (error) { send({ type: "error", error: error instanceof Error ? error.message : String(error) }); } });
 let shuttingDown = false;
-async function shutdown(): Promise<void> { if (shuttingDown) return; shuttingDown = true; await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(false).catch(() => undefined), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(false).catch(() => undefined)]); await browserGateMonitorExecutor.close().catch(() => undefined); await earlyGateExecutor.closeAll().catch(() => undefined); await shopifyPurchaseReadyExecutor.closeAll().catch(() => undefined); await browserCore.shutdown().catch(() => undefined); process.exit(0); }
+async function shutdown(): Promise<void> { if (shuttingDown) return; shuttingDown = true; await Promise.all([earlyGateExecutor.setFinalPurchaseAllowed(false).catch(() => undefined), shopifyPurchaseReadyExecutor.setFinalPurchaseAllowed(false).catch(() => undefined), mediaMarktExecutor.setFinalPurchaseAllowed(false).catch(() => undefined)]); await browserGateMonitorExecutor.close().catch(() => undefined); await earlyGateExecutor.closeAll().catch(() => undefined); await shopifyPurchaseReadyExecutor.closeAll().catch(() => undefined); await mediaMarktExecutor.closeAll().catch(() => undefined); await browserCore.shutdown().catch(() => undefined); process.exit(0); }
 process.on("SIGTERM", () => void shutdown()); process.on("SIGINT", () => void shutdown());
 process.on("uncaughtException", error => { process.stderr.write(`Uncaught browser-worker error: ${error.stack ?? error.message}\n`); void shutdown(); });
 process.on("unhandledRejection", reason => { process.stderr.write(`Unhandled browser-worker rejection: ${String(reason)}\n`); void shutdown(); });

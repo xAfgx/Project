@@ -305,6 +305,7 @@ async function createBackend(): Promise<void> {
 
   commerceExecutor = new CommerceTaskExecutorRouter(shopId => shops.get(shopId));
   commerceExecutor.register("shopify", paymentAwareBrowserWorker);
+  commerceExecutor.register("mediamarkt", paymentAwareBrowserWorker);
   commerceExecutor.registerMonitorExecutor(commerceMonitor);
   commerceExecutor.registerEarlyGateExecutor(paymentAwareBrowserWorker);
   await commerceExecutor.setFinalPurchaseAllowed(true);
@@ -828,6 +829,10 @@ app.whenReady().then(async () => {
     // browser or vision process is created. Orphaned Chrome keeps the profile
     // user-data dir locked, which otherwise blocks re-running a profile.
     killOrphanedAresProcesses();
+    // Force UTF-8 stdio for every Python child (Windows defaults to cp1252 and
+    // a single checkmark/Umlaut in a log line kills the worker).
+    process.env["PYTHONUTF8"] = "1";
+    process.env["PYTHONIOENCODING"] = "utf-8";
     loadCapMonsterApiKeyFromEnvFiles(app.getAppPath());
     await createBackend();
     mainWindow = createWindow();

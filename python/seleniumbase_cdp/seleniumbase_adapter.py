@@ -492,6 +492,10 @@ class SeleniumBaseCdpAdapter(BaseTargetAdapter):
     def site_grid_state(self) -> Dict[str, Any]:
         return self._visual_interactions.grid_state()
 
+    def dismiss_consent_popup(self, force: bool = False) -> Dict[str, Any]:
+        """Dismiss a consent/cookie banner through the shared visual runtime."""
+        return self._visual_interactions.dismiss_consent_popup(force)
+
     def site_slider_state(self) -> Dict[str, Any]:
         return self._visual_interactions.slider_state()
 

@@ -44,7 +44,7 @@ export class SemanticCheckoutPreparer {
     return autofill.observeReady();
   }
 
-  async prepare(page: Page, profile: AresProfile): Promise<SemanticCheckoutPreparationResult> {
+  async prepare(page: Page, profile: AresProfile, options: { maxAttempts?: number } = {}): Promise<SemanticCheckoutPreparationResult> {
     const interactions = new GhostCursorUiInteractionHelper(page);
     const plan = await new SemanticCheckoutProfilePlanner(interactions).prepare(page, profile);
     const autofill = new SemanticFieldAutofill(page, interactions, this.fieldResolver);
@@ -74,7 +74,7 @@ export class SemanticCheckoutPreparer {
       { target: semanticTarget("countryCode", "unknown") as CheckoutTarget, selectors: ['select[name="countryCode"]', 'select[name*="country" i]'], select: true }
     ];
 
-    for (let attempt = 0; attempt < 6; attempt++) {
+    for (let attempt = 0; attempt < Math.max(1, Math.min(6, Math.floor(options.maxAttempts ?? 6))); attempt++) {
       if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 450));
       await autofill.fillSemantic(plan.values).catch(() => undefined);
 

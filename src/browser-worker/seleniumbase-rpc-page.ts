@@ -6,7 +6,7 @@ type NetworkEvent = { url?: string; headers?: Record<string, string>; body?: str
 type FrameSnapshot = { path?: unknown; url?: unknown; name?: unknown; depth?: unknown };
 type PageSnapshot = { url?: unknown; readyState?: unknown; frames?: unknown };
 type RpcReply = { type?: string; requestId?: string; ok?: boolean; result?: unknown; error?: string; url?: string; title?: string; events?: NetworkEvent[]; };
-type Pending = { resolve: (value: RpcReply) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout; };
+type Pending = { resolve: (value: RpcReply) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout; label: string; startedAt: number; };
 export interface LocatorDescriptor { selector: string; nth?: number; hasText?: { source: string; flags: string } | string; framePath?: string[]; }
 
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
@@ -59,9 +59,16 @@ export class SeleniumBaseRpcTransport {
     if (this.closed) throw new Error("SeleniumBase task worker is closed.");
     if (!allowBeforeReady && !this.ready) throw new Error(`SeleniumBase RPC ${type} rejected before READY.`);
     const requestId = randomUUID();
+    // TEMPORARY LIVE DEBUG (remove after live validation): slow-RPC tracing.
+    const label = type === "rpc" ? `rpc:${String(payload["action"] ?? "")}` : type;
+    const startedAt = Date.now();
     const reply = new Promise<RpcReply>((resolve, reject) => {
-      const timeout = setTimeout(() => { this.pending.delete(requestId); reject(new Error(`SeleniumBase RPC ${type} timed out after ${timeoutMs}ms.`)); }, Math.max(250, timeoutMs));
-      this.pending.set(requestId, { resolve, reject, timeout });
+      const timeout = setTimeout(() => {
+        this.pending.delete(requestId);
+        process.stderr.write(`[JOURNEY] rpc-timeout ${label} after=${Date.now() - startedAt}ms\n`);
+        reject(new Error(`SeleniumBase RPC ${type} timed out after ${timeoutMs}ms.`));
+      }, Math.max(250, timeoutMs));
+      this.pending.set(requestId, { resolve, reject, timeout, label, startedAt });
     });
     this.child.stdin.write(`${JSON.stringify({ type, requestId, ...payload })}\n`);
     return reply;
@@ -75,6 +82,9 @@ export class SeleniumBaseRpcTransport {
       const id = message.requestId; if (!id) continue;
       const pending = this.pending.get(id); if (!pending) continue;
       this.pending.delete(id); clearTimeout(pending.timeout);
+      // TEMPORARY LIVE DEBUG (remove after live validation): slow-RPC tracing.
+      const elapsed = Date.now() - pending.startedAt;
+      if (elapsed > 2000) process.stderr.write(`[JOURNEY] rpc-slow ${pending.label} ${elapsed}ms\n`);
       if (message.type === "error" || message.ok === false) pending.reject(new Error(message.error || "SeleniumBase RPC failed.")); else pending.resolve(message);
     }
   }
@@ -104,6 +114,9 @@ class SeleniumBaseRpcLocator implements Locator {
   async click(options: Record<string, unknown> = {}): Promise<void> { await this.op("click", { options }, Number(options["timeout"] ?? 15_000)); }
   async fill(value: string, options: Record<string, unknown> = {}): Promise<void> { await this.op("fill", { value, options }, Number(options["timeout"] ?? 15_000)); }
   async type(value: string, options: Record<string, unknown> = {}): Promise<void> { await this.op("type", { value, options }, Number(options["timeout"] ?? 60_000)); }
+  async press(key: string, options: { timeout?: number; focus?: boolean; alreadyFocused?: boolean; submit?: boolean } = {}): Promise<void> {
+    await this.op("press", { key, options }, options.timeout ?? 15_000);
+  }
   async inputValue(options: { timeout?: number } = {}): Promise<string> { return String(await this.op("input-value", {}, options.timeout ?? 5_000).catch(() => false) ?? ""); }
   async innerText(options: { timeout?: number } = {}): Promise<string> { return String(await this.op("inner-text", {}, options.timeout ?? 5_000) ?? ""); }
   async allTextContents(): Promise<string[]> { const value = await this.op("all-text-contents"); return Array.isArray(value) ? value.map(item => String(item ?? "")) : []; }
@@ -152,7 +165,8 @@ export class SeleniumBaseRpcPage implements Page {
     move: async (x: number, y: number): Promise<void> => { await this.command("rpc", { action:"mouse-move", x, y }, 5_000); },
     down: async (options: Record<string, unknown> = {}): Promise<void> => { await this.command("rpc", { action:"mouse-down", options }, 5_000); },
     up: async (options: Record<string, unknown> = {}): Promise<void> => { await this.command("rpc", { action:"mouse-up", options }, 5_000); },
-    click: async (x: number, y: number, options: Record<string, unknown> = {}): Promise<void> => { await this.command("rpc", { action:"mouse-click", x, y, options }, 10_000); }
+    click: async (x: number, y: number, options: Record<string, unknown> = {}): Promise<void> => { await this.command("rpc", { action:"mouse-click", x, y, options }, 10_000); },
+    wheel: async (deltaX: number, deltaY: number): Promise<void> => { await this.command("rpc", { action:"mouse-wheel", deltaX, deltaY }, 5_000); }
   };
   constructor(private readonly transport: SeleniumBaseRpcTransport) {
     if (!transport.isReady) throw new Error("Cannot create SeleniumBase page before worker READY.");
@@ -172,6 +186,20 @@ export class SeleniumBaseRpcPage implements Page {
     return reply.result;
   }
   url(): string { return this.currentUrl; }
+  async refreshCurrentUrl(): Promise<string> {
+    const reply = await this.command("rpc", { action: "current-url" }, 5_000);
+    const url = String(reply.result ?? reply.url ?? this.currentUrl);
+    if (url) {
+      this.currentUrl = url;
+      this.mainFrameRef.update(url, "main");
+    }
+    return this.currentUrl;
+  }
+  async cookies(): Promise<Array<Record<string, unknown>>> {
+    const reply = await this.command("rpc", { action: "cookies" }, 5_000).catch(() => undefined as RpcReply | undefined);
+    const result = reply?.result;
+    return Array.isArray(result) ? result as Array<Record<string, unknown>> : [];
+  }
   async title(): Promise<string> { const reply=await this.command("rpc",{action:"title"},5_000); return String(reply.result??reply.title??""); }
   isClosed(): boolean { return this.transport.closed; }
   async evaluate<T = unknown>(fn: ((...args: any[]) => T) | string, ...args: any[]): Promise<T> {
@@ -196,6 +224,21 @@ export class SeleniumBaseRpcPage implements Page {
     };
     const reply=await this.command("rpc",{action:"force-captcha-poll",captcha},25_000).catch(()=>undefined as RpcReply|undefined);
     return Boolean(reply?.result);
+  }
+  async dismissConsentPopups(force=false):Promise<boolean>{
+    const reply=await this.command("rpc",{action:"dismiss-consent",force},8_000).catch(()=>undefined as RpcReply|undefined);
+    const result=reply?.result;
+    return Boolean(result&&typeof result==="object"&&(result as Record<string,unknown>)["dismissed"]===true);
+  }
+  async setScrollProfile(profile:Record<string,number>|undefined):Promise<void>{
+    await this.command("rpc",{action:"set-scroll-profile",profile},8_000).catch(()=>undefined);
+  }
+  async viewportSize():Promise<{width:number;height:number}>{
+    const reply=await this.command("rpc",{action:"viewport-size"},5_000).catch(()=>undefined as RpcReply|undefined);
+    const result=reply?.result;
+    if(!result||typeof result!=="object")return {width:0,height:0};
+    const record=result as Record<string,unknown>;
+    return {width:Number(record["width"]??0)||0,height:Number(record["height"]??0)||0};
   }
   on(event:string,listener:(...args:any[])=>void):Page{
     if(event==="response")this.responseListeners.add(listener as (response:Response)=>void);

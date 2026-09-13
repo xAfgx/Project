@@ -622,12 +622,37 @@ return {x:r.left+Number(frame.clientLeft||0),y:r.top+Number(frame.clientTop||0),
 class OopifTaskRpcRuntime(base.TaskRpcRuntime):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
+        self._scroll_profile: Dict[str, float] = {}
         driver = getattr(self.sb, "driver", None)
         if driver is not None and hasattr(driver, "cdp_base"):
             driver = driver.cdp_base
         websocket_url = str(getattr(driver, "websocket_url", "") or "")
         self._oopif_registry = FlatCdpTargetRegistry(websocket_url)
         atexit.register(self._oopif_registry.close)
+
+    def set_scroll_profile(self, profile: Any) -> None:
+        """Optional per-task scroll tuning; empty keeps the default motion.
+
+        Modules opt in explicitly (e.g. a slower, followable wheel), so the
+        shared scroll system stays byte-identical for every other module.
+        """
+        if not isinstance(profile, dict):
+            self._scroll_profile = {}
+            return
+        clean: Dict[str, float] = {}
+        for key in (
+            "speedMin", "speedMax",
+            "stepMin", "stepMax",
+            "chunkMin", "chunkMax",
+            "pauseMin", "pauseMax",
+            "settleMin", "settleMax",
+        ):
+            try:
+                value = float(profile.get(key))
+            except (TypeError, ValueError):
+                continue
+            clean[key] = value
+        self._scroll_profile = clean
 
     def _active_target_id(self) -> str:
         tab = self.sb.get_active_tab()
@@ -1024,6 +1049,13 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 )
                 if not below and not above:
                     return True
+                # A sticky/fixed header sits above the margin but is already
+                # fully visible and the document cannot scroll up any further.
+                # Treat it as in view instead of looping wheel gestures that
+                # cannot move the page (this previously stalled the search field).
+                if above and scroll_y <= 1.0 and top >= 0:
+                    self._wheel_log(f"already-visible-top scrollY={scroll_y:.0f} top={top:.0f}")
+                    return True
                 # Minimal correction only: scroll just enough to bring the field
                 # inside the viewport. Centering required a large scroll whose
                 # frame-offset math could overshoot (and looked like scrolling
@@ -1036,8 +1068,13 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                     return True
                 # A person scrolls in short flicks, not one long fling: cap each
                 # gesture and let the loop cover the remaining distance with a
-                # short pause in between.
-                max_step = base.random.uniform(550.0, 900.0)
+                # short pause in between. Defaults are the established motion;
+                # a module may opt into its own profile via set-scroll-profile.
+                scroll_profile = getattr(self, "_scroll_profile", {}) or {}
+                max_step = base.random.uniform(
+                    float(scroll_profile.get("stepMin", 550.0)),
+                    float(scroll_profile.get("stepMax", 900.0)),
+                )
                 if abs(scroll_amount) > max_step:
                     scroll_amount = max_step if scroll_amount > 0 else -max_step
                 # Native wheel events over the main-page margin (x=10) at the
@@ -1070,7 +1107,10 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                 remaining = scroll_amount
                 guard = 0
                 while abs(remaining) > 4 and guard < 30:
-                    chunk = min(abs(remaining), base.random.uniform(70.0, 170.0))
+                    chunk = min(abs(remaining), base.random.uniform(
+                        float(scroll_profile.get("chunkMin", 70.0)),
+                        float(scroll_profile.get("chunkMax", 170.0)),
+                    ))
                     if remaining < 0:
                         chunk = -chunk
                     chunk = int(chunk) or (1 if chunk > 0 else -1)
@@ -1084,8 +1124,11 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
                     )))
                     remaining -= chunk
                     guard += 1
-                    time.sleep(base.random.uniform(0.04, 0.13))
-                time.sleep(0.2)
+                    time.sleep(base.random.uniform(
+                        float(scroll_profile.get("pauseMin", 0.04)),
+                        float(scroll_profile.get("pauseMax", 0.13)),
+                    ))
+                time.sleep(float(scroll_profile.get("settleMin", 0.2)) + 0.05)
             return True
         except Exception as exc:
             self._wheel_log(f"error={type(exc).__name__}:{str(exc)[:200]}")
@@ -1114,7 +1157,11 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
         synthesize = getattr(cdp_input, "synthesize_scroll_gesture", None)
         if not callable(synthesize):
             return False
-        speed = int(base.random.uniform(450.0, 950.0))
+        scroll_profile = getattr(self, "_scroll_profile", {}) or {}
+        speed = int(base.random.uniform(
+            float(scroll_profile.get("speedMin", 450.0)),
+            float(scroll_profile.get("speedMax", 950.0)),
+        ))
         try:
             loop.run_until_complete(tab.send(synthesize(
                 x=float(x),
@@ -1131,7 +1178,10 @@ class OopifTaskRpcRuntime(base.TaskRpcRuntime):
         except Exception as exc:
             self._wheel_diag(f"synthesize-failed {type(exc).__name__}:{str(exc)[:140]}")
             return False
-        time.sleep(base.random.uniform(0.12, 0.28))
+        time.sleep(base.random.uniform(
+            float(scroll_profile.get("settleMin", 0.12)),
+            float(scroll_profile.get("settleMax", 0.28)),
+        ))
         after_scroll_y = self._document_scroll_y()
         moved = abs(after_scroll_y - float(before_scroll_y)) >= 4.0
         self._wheel_diag(

@@ -196,6 +196,12 @@ class TaskRpcRuntime:
         self._network_events: Deque[Dict[str, Any]] = deque(maxlen=MAX_NETWORK_EVENTS)
         self._last_tab_count = 1
         self._active_frame_path: List[str] = []
+        # MediaMarkt direct lane (`direct_markt*`) opts out of the per-RPC session
+        # recovery and watchdog polling, which are needed by the Pokémon lanes
+        # but make every live action 5-45s slow. Pokémon lanes keep the default.
+        self.fast_mode = False
+        self._url_cache_value = ""
+        self._url_cache_at = 0.0
         self._install_network_handler()
         self._install_dialog_handler()
         self._apply_user_agent_override(user_agent, language)
@@ -349,6 +355,23 @@ class TaskRpcRuntime:
         url = str(command.get("url") or "").strip()
         if not url:
             raise ValueError("navigate requires url")
+        if self.fast_mode:
+            navigate = getattr(getattr(mycdp, "page", None), "navigate", None)
+            if callable(navigate):
+                # The fast lane bypasses adapter.goto(), which is where the focus
+                # emulation is normally asserted. Without it a backgrounded window
+                # reports hasFocus()===false and the storefront scrolls to its
+                # newsletter. Assert it here (browser-level emulation, no page JS).
+                try:
+                    self.adapter._enable_focus_emulation()
+                except Exception:
+                    pass
+                tab = self.sb.get_active_tab()
+                loop = self.sb.get_event_loop()
+                loop.run_until_complete(tab.send(navigate(url=url)))
+                self._url_cache_value = url
+                self._url_cache_at = time.monotonic()
+                return {"url": url, "result": True}
         self.adapter.goto(url)
         self._sync_newest_target()
         return {"url": str(self.sb.get_current_url() or url), "result": True}
@@ -358,7 +381,7 @@ class TaskRpcRuntime:
             items = list(self._network_events)
             self._network_events.clear()
         if not items:
-            return {"events": [], "url": str(self.sb.get_current_url() or "")}
+            return {"events": [], "url": self._fast_url()}
 
         tab = self.sb.get_active_tab()
         loop = self.sb.get_event_loop()
@@ -372,11 +395,11 @@ class TaskRpcRuntime:
             except Exception:
                 pass
             output.append(event)
-        return {"events": output, "url": str(self.sb.get_current_url() or "")}
+        return {"events": output, "url": self._fast_url()}
 
     def page_state(self) -> Dict[str, Any]:
         try:
-            url = str(self.sb.get_current_url() or "")
+            url = self._fast_url()
         except Exception:
             url = ""
         try:
@@ -434,21 +457,53 @@ class TaskRpcRuntime:
 
         return list(entries.values())
 
+    def _fast_url(self, force: bool = False) -> str:
+        """URL for RPC replies; cached briefly in the MediaMarkt fast lane.
+
+        ``get_current_url`` is a full CDP ``window.location.href`` evaluate. On
+        the live page every extra evaluate costs ~1s, and it ran for every RPC
+        reply on top of the actual action. The cache only applies to the
+        MediaMarkt direct lane; every other lane always reads the live URL.
+        """
+        if not self.fast_mode:
+            return str(self.sb.get_current_url() or "")
+        now = time.monotonic()
+        if not force and self._url_cache_value and (now - self._url_cache_at) < 1.5:
+            return self._url_cache_value
+        try:
+            self._url_cache_value = str(self.sb.get_current_url() or "")
+            self._url_cache_at = now
+        except Exception:
+            pass
+        return self._url_cache_value
+
     def rpc(self, command: Dict[str, Any]) -> Dict[str, Any]:
-        self._ensure_session_alive()
-        self._sync_newest_target()
+        if not self.fast_mode:
+            self._ensure_session_alive()
+            self._sync_newest_target()
         action = str(command.get("action") or "")
         if action == "title":
-            return {"result": str(self.sb.get_title() or ""), "url": str(self.sb.get_current_url() or "")}
+            return {"result": str(self.sb.get_title() or ""), "url": self._fast_url()}
+        if action == "current-url":
+            url = self._fast_url(force=True)
+            return {"result": url, "url": url}
+        if action == "cookies":
+            # Native cookie read (browser cookie store, no page JS) so a stored
+            # consent can be detected without waiting for the renderer.
+            try:
+                cookies = self.adapter.get_snapshot_cookies()
+            except Exception:
+                cookies = []
+            return {"result": cookies, "url": self._fast_url()}
         if action == "page-state":
             state = self.page_state()
             return {"result": state, "url": str(state.get("url") or "")}
         if action == "evaluate-page":
             result = self._evaluate_function(str(command.get("script") or ""), command.get("args") if isinstance(command.get("args"), list) else [])
-            return {"result": result, "url": str(self.sb.get_current_url() or "")}
+            return {"result": result, "url": self._fast_url()}
         if action == "wait-load-state":
             self._wait_ready(int(command.get("timeoutMs") or 15_000))
-            return {"result": True, "url": str(self.sb.get_current_url() or "")}
+            return {"result": True, "url": self._fast_url()}
         if action == "bring-to-front":
             bring = getattr(self.sb, "bring_active_window_to_front", None)
             if callable(bring):
@@ -460,25 +515,53 @@ class TaskRpcRuntime:
                 apply_runtime_config(command.get("captcha"))
             except Exception:
                 pass
-            return {"result": self.adapter.force_captcha_poll(), "url": str(self.sb.get_current_url() or "")}
+            return {"result": self.adapter.force_captcha_poll(), "url": self._fast_url()}
+        if action == "dismiss-consent":
+            result = self.adapter.dismiss_consent_popup(bool(command.get("force")))
+            self._sync_newest_target()
+            return {
+                "result": result,
+                "url": self._fast_url(),
+            }
+        if action == "set-scroll-profile":
+            setter = getattr(self, "set_scroll_profile", None)
+            if callable(setter):
+                setter(command.get("profile"))
+            return {"result": True, "url": self._fast_url()}
+        if action == "viewport-size":
+            size: Dict[str, Any] = {}
+            try:
+                size = self.sb.get_window_size() or {}
+            except Exception:
+                size = {}
+            return {
+                "result": {
+                    "width": int(size.get("width") or 0),
+                    "height": int(size.get("height") or 0),
+                },
+                "url": self._fast_url(),
+            }
         if action == "debug-auto-state":
-            return {"result": self.adapter.auto_interaction_state(), "url": str(self.sb.get_current_url() or "")}
+            return {"result": self.adapter.auto_interaction_state(), "url": self._fast_url()}
         if action == "reinstall-stealth-spoof":
             seed = getattr(self, "_ares_spoof_seed", None)
             if seed is None:
-                return {"result": False, "url": str(self.sb.get_current_url() or "")}
+                return {"result": False, "url": self._fast_url()}
             result = self.install_stealth_spoof(seed, getattr(self, "_ares_spoof_ua", None))
-            return {"result": result, "url": str(self.sb.get_current_url() or "")}
-        if action in {"mouse-move", "mouse-click"}:
+            return {"result": result, "url": self._fast_url()}
+        if action in {"mouse-move", "mouse-click", "mouse-wheel"}:
             return {"result": self._mouse(action, command)}
 
         locator = command.get("locator")
         if not isinstance(locator, dict):
             raise ValueError(f"RPC action {action!r} requires locator")
         frame_path = [str(value) for value in locator.get("framePath") or [] if str(value)]
+        result = self._in_frames(frame_path, lambda: self._locator_op(action, locator, command))
+        if self.fast_mode and action in {"press", "type"}:
+            return {"result": result, "url": self._url_cache_value}
         return {
-            "result": self._in_frames(frame_path, lambda: self._locator_op(action, locator, command)),
-            "url": str(self.sb.get_current_url() or ""),
+            "result": result,
+            "url": self._fast_url(),
         }
 
     def _execute_script_in_frame_path(self, frame_path: Iterable[str], script: str, args: Iterable[Any]) -> Any:
@@ -615,6 +698,8 @@ return {x, y};
         button: Any = None,
         buttons: int | None = None,
         click_count: int | None = None,
+        delta_x: float | None = None,
+        delta_y: float | None = None,
     ) -> None:
         input_domain = getattr(mycdp, "input_", None)
         dispatch = getattr(input_domain, "dispatch_mouse_event", None)
@@ -632,6 +717,10 @@ return {x, y};
             kwargs["buttons"] = int(buttons)
         if click_count is not None:
             kwargs["click_count"] = int(click_count)
+        if delta_x is not None:
+            kwargs["delta_x"] = float(delta_x)
+        if delta_y is not None:
+            kwargs["delta_y"] = float(delta_y)
         tab = self.sb.get_active_tab()
         loop = self.sb.get_event_loop()
         loop.run_until_complete(tab.send(dispatch(**kwargs)))
@@ -803,6 +892,8 @@ return {x, y};
             return self._native_locator_click(locator, selector, nth, text_spec)
         if action == "type":
             return self._locator_type(locator, selector, nth, text_spec, command)
+        if action == "press":
+            return self._locator_press(locator, selector, nth, text_spec, command)
         result = self._execute_script_retry(
             locator_script(),
             selector,
@@ -876,9 +967,15 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         group_min = max(0.0, float(options.get("groupPauseMinMs") or 250))
         group_max = max(group_min, float(options.get("groupPauseMaxMs") or 700))
 
-        # Focus through the native focus path. No JS value manipulation and no
-        # injected scripts: the page only ever sees trusted input events.
-        self._native_focus_locator(locator, selector, nth, text_spec)
+        # Focus through the native focus path unless the caller already placed
+        # the caret with a native mouse click. MediaMarkt's header search can be
+        # pushed to the footer by the page after consent; focusing through the
+        # generic locator click would run scrollIntoView and chase that bad
+        # position before typing.
+        if options.get("focusNoScroll") is True:
+            self._execute_script_retry(locator_script(), selector, nth, text_spec, "focus", {})
+        elif options.get("alreadyFocused") is not True:
+            self._native_focus_locator(locator, selector, nth, text_spec)
 
         if clear:
             self._press_native_key("a", code="KeyA", vk=65, modifiers=2, commands=["selectAll"])
@@ -918,6 +1015,53 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         actual_value = str(result) if isinstance(result, str) else ""
         return {"value": actual_value, "verified": actual_value == value}
 
+    def _locator_press(
+        self,
+        locator: Dict[str, Any],
+        selector: str,
+        nth: int,
+        text_spec: Dict[str, str] | None,
+        command: Dict[str, Any],
+    ) -> Any:
+        """Press a native key on a locator through CDP Input.dispatchKeyEvent.
+
+        Used for keyboard-submitted forms (e.g. shop search fields). No page
+        script is injected; the DOM only observes trusted key events.
+        """
+        key = str(command.get("key") or "Enter")
+        options = command.get("options") if isinstance(command.get("options"), dict) else {}
+        if options.get("focusNoScroll") is True:
+            self._execute_script_retry(locator_script(), selector, nth, text_spec, "focus", {})
+        else:
+            should_focus = not (options.get("focus") is False or options.get("alreadyFocused") is True)
+            if should_focus:
+                self._native_focus_locator(locator, selector, nth, text_spec)
+        keymap = {
+            "Enter": ("Enter", 13),
+            "Escape": ("Escape", 27),
+            "Tab": ("Tab", 9),
+            "Backspace": ("Backspace", 8),
+            "ArrowDown": ("ArrowDown", 40),
+            "ArrowUp": ("ArrowUp", 38),
+            "Home": ("Home", 36),
+            "End": ("End", 35),
+            "PageUp": ("PageUp", 33),
+            "PageDown": ("PageDown", 34),
+        }
+        if key in keymap:
+            code, vk = keymap[key]
+            if key == "Enter" and bool(options.get("submit")):
+                self._press_native_key(key, code=code, vk=vk, type_down="rawKeyDown", char_text="\r")
+            else:
+                self._press_native_key(key, code=code, vk=vk)
+            if self.fast_mode and key == "Enter":
+                self._url_cache_value = ""
+            return True
+        if len(key) == 1:
+            self._dispatch_key_char(key)
+            return True
+        raise ValueError(f"Unsupported press key: {key}")
+
     def _press_native_key(
         self,
         key: str,
@@ -926,6 +1070,8 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         vk: int = 0,
         modifiers: int = 0,
         commands: List[str] | None = None,
+        type_down: str = "keyDown",
+        char_text: str | None = None,
     ) -> None:
         input_domain = getattr(mycdp, "input_", None)
         dispatch = getattr(input_domain, "dispatch_key_event", None)
@@ -934,7 +1080,7 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
         tab = self.sb.get_active_tab()
         loop = self.sb.get_event_loop()
         loop.run_until_complete(tab.send(dispatch(
-            type_="keyDown",
+            type_=type_down,
             modifiers=modifiers,
             key=key,
             code=code,
@@ -942,6 +1088,17 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
             native_virtual_key_code=vk,
             commands=commands or [],
         )))
+        if char_text is not None:
+            loop.run_until_complete(tab.send(dispatch(
+                type_="char",
+                modifiers=modifiers,
+                key=key,
+                code=code,
+                text=char_text,
+                unmodified_text=char_text,
+                windows_virtual_key_code=vk,
+                native_virtual_key_code=vk,
+            )))
         loop.run_until_complete(tab.send(dispatch(
             type_="keyUp",
             modifiers=modifiers,
@@ -1054,6 +1211,17 @@ const fn=(0,eval)(`(${fnSource})`); if(arguments[5]) return fn(items,...extra); 
 
     def _mouse(self, action: str, command: Dict[str, Any]) -> bool:
         x, y = float(command.get("x") or 0), float(command.get("y") or 0)
+        if action == "mouse-wheel":
+            if not self.fast_mode:
+                return False
+            self._dispatch_mouse_event(
+                "mouseWheel",
+                x,
+                y,
+                delta_x=float(command.get("deltaX") or 0),
+                delta_y=float(command.get("deltaY") or 0),
+            )
+            return True
         hit = self._execute_script_retry_for_path(
             [],
             "return !!document.elementFromPoint(Number(arguments[0]), Number(arguments[1]));",
@@ -1189,9 +1357,14 @@ def run(start: Dict[str, Any]) -> int:
     )
     runtime = TaskRpcRuntime(adapter, user_agent=user_agent, language=language)
 
+    # MediaMarkt direct lane: lean RPC loop without the per-request recovery and
+    # watchdog polling that the Pokémon lanes rely on.
+    task_id = str(start.get("taskId") or "").strip()
+    runtime.fast_mode = task_id.startswith("direct_markt")
+
     # Diversify hardware/GPU/screen fingerprint per task before any page loads,
     # so a pool of identical runners is not fingerprinted as one cluster.
-    task_seed = str(start.get("taskId") or "").strip()
+    task_seed = task_id
     if task_seed:
         try:
             runtime.install_stealth_spoof(int(hashlib.sha256(task_seed.encode("utf-8")).hexdigest()[:8], 16))
@@ -1215,7 +1388,8 @@ def run(start: Dict[str, Any]) -> int:
             try:
                 command = commands.get(timeout=0.25)
             except queue.Empty:
-                adapter.poll_runtime()
+                if not runtime.fast_mode:
+                    adapter.poll_runtime()
                 continue
             request_id = str(command.get("requestId") or "")
             command_type = str(command.get("type") or "")

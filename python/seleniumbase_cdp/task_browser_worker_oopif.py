@@ -92,6 +92,17 @@ def _pointer_mouse(self: Any, action: str, command: dict[str, Any]) -> bool:
     Coordinates are viewport coordinates. The pressed state is kept only so
     mouseMoved carries the correct CDP buttons bitmask while a drag is active.
     """
+    if action == "mouse-wheel":
+        if not bool(getattr(self, "fast_mode", False)):
+            return False
+        self._dispatch_mouse_event(
+            "mouseWheel",
+            float(getattr(self, "_pointer_x", 0.0)),
+            float(getattr(self, "_pointer_y", 0.0)),
+            delta_x=float(command.get("deltaX") or 0),
+            delta_y=float(command.get("deltaY") or 0),
+        )
+        return True
     if action in {"mouse-move", "mouse-click"}:
         x = float(command.get("x") or 0)
         y = float(command.get("y") or 0)

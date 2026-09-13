@@ -16,7 +16,13 @@
             <span class="builder-section">{{ 'Ziel & Produkt' | t }}</span>
             <div class="form-grid compact">
               <label><span>{{ 'Name' | t }}</span><input [(ngModel)]="taskName" [placeholder]="'Pokemon Drop' | t"></label>
-              <label><span>{{ 'Shop' | t }}</span><select [(ngModel)]="selectedShopId" (ngModelChange)="onShopSelected()"><option value="">{{ 'Select shop' | t }}</option><option *ngFor="let shop of composerShopOptions; trackBy: trackShop" [value]="shop.id">{{ shop.name }}</option></select></label>
+              <label *ngIf="!selectedModule"><span>{{ 'Shop' | t }}</span><select [(ngModel)]="selectedShopId" (ngModelChange)="onShopSelected()"><option value="">{{ 'Select shop' | t }}</option><option *ngFor="let shop of composerShopOptions; trackBy: trackShop" [value]="shop.id">{{ shop.name }}</option></select></label>
+              <label *ngIf="selectedModule && selectedModule.defaultShop"><span>{{ 'Shop' | t }}</span><input [value]="selectedModuleShop?.name || selectedModule.name" readonly></label>
+              <ng-container *ngIf="selectedModule && !selectedModule.defaultShop">
+                <label *ngIf="moduleShopOptions.length > 1"><span>{{ 'Shop' | t }}</span><select [(ngModel)]="selectedShopId" (ngModelChange)="onShopSelected()"><option value="">{{ 'Select shop' | t }}</option><option *ngFor="let shop of composerShopOptions; trackBy: trackShop" [value]="shop.id">{{ shop.name }}</option></select></label>
+                <label *ngIf="moduleShopOptions.length === 1"><span>{{ 'Shop' | t }}</span><input [value]="selectedModuleShop?.name" readonly></label>
+                <label class="span-2" *ngIf="moduleShopOptions.length === 0"><span>{{ 'Store URL' | t }}</span><input [(ngModel)]="moduleShopUrl" [placeholder]="'https://shop.example' | t"></label>
+              </ng-container>
               <label class="span-2" *ngIf="monitorStrategyMode === 'product-monitor'"><span>{{ 'Product / keyword / URL' | t }}</span><input [(ngModel)]="searchTerm" [placeholder]="'Pokemon 151 Booster Bundle' | t"></label>
               <label class="span-2" *ngIf="monitorStrategyMode === 'early-gate'"><span>{{ 'Product name' | t }}</span><input [(ngModel)]="earlyGateProductName" [placeholder]="'Elite Trainer Box' | t"></label>
               <label><span>{{ 'Interval' | t }}</span><div class="input-unit"><input [(ngModel)]="taskIntervalSeconds" type="number" min="1"><b>{{ 'sec' | t }}</b></div></label>
@@ -53,6 +59,11 @@
       <path d="M33.6 7.9c-.6-.4-1.4-.5-2.1-.3-.3-1-.9-2-1.8-2.7-.9-.8-2-1.1-3-.9-1 .2-2 1-2.7 2-.9 1.3-1.5 3-1.8 4.4l-3.1 1c-1 .3-1.1.4-1.2 1.4L14 41.4 33.9 45l.4-36.7c0-.1-.2-.3-.7-.4Z" fill="#95bf47"/>
       <path d="M31.8 7.6c-1 .3-2.2.7-3.3 1 .4-1.3 1-2.5 1.7-3.3.5-.5 1.1-.9 1.6-.9.1.9.1 2 0 3.2Z" fill="#5e8e3e"/>
       <path d="M27 17.5l-1 3.2s-.9-.5-2-.4c-1.6.1-1.6 1.1-1.6 1.4 0 1.5 3.9 1.8 3.9 5 0 2.5-1.6 4.1-3.7 4.2-2.7.1-4.1-1.4-4.1-1.4l.6-1.9s1.4 1 2.5 1c.7 0 1-.6 1-1 0-2-3.1-1.9-3.1-4.8 0-2.4 1.8-4.9 5.4-5.1 1.4-.1 2.1.3 2.1.3Z" fill="#fff"/>
+    </svg>
+    <svg *ngIf="moduleId === 'mediamarkt'" viewBox="0 0 48 48" aria-hidden="true">
+      <rect x="3" y="6" width="42" height="36" rx="7" fill="#e2001a"/>
+      <path d="M12 34V16h6.2L24 27.4 29.8 16H36v18" fill="none" stroke="#fff" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="24" cy="20.6" r="3" fill="#e2001a"/>
     </svg>
   </ng-template>
 

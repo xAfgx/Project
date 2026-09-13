@@ -71,6 +71,27 @@ class VisualInteractionRuntime:
         """
         self._consent_settled_for_document = False
 
+    def dismiss_consent_popup(self, force: bool = False) -> Dict[str, Any]:
+        """Dismiss a consent/cookie banner once through the shared handler.
+
+        Exposed so task flows can clear a banner that blocks input before an
+        action. Without ``force`` the handler stays settled after the first
+        attempt on a document; flows that know a new document loaded can force
+        one fresh attempt.
+        """
+        if force:
+            self._consent_settled_for_document = False
+        if self._consent_settled_for_document:
+            return {"dismissed": False, "reason": "consent-settled-for-document"}
+        self._consent_settled_for_document = True
+        # Synchronous on purpose: the RPC command loop must not continue while
+        # a detached worker thread still uses the shared CDP session. A
+        # lingering thread blocked every following locator command.
+        try:
+            return self._popup_handler.dismiss_once()
+        except Exception as exc:
+            return {"dismissed": False, "reason": f"error:{type(exc).__name__}"}
+
     def poll_and_act(self) -> Dict[str, Any]:
         self._trace.append("runtime-stage-enter", {"stage": "popup-dismiss"})
         started = time.monotonic()

@@ -15,6 +15,7 @@ export interface BrowserLocator {
   click(options?: Record<string, unknown>): Promise<void>;
   fill(value: string, options?: Record<string, unknown>): Promise<void>;
   type(value: string, options?: Record<string, unknown>): Promise<void>;
+  press(key: string, options?: { timeout?: number; focus?: boolean; alreadyFocused?: boolean; focusNoScroll?: boolean; submit?: boolean }): Promise<void>;
   inputValue(options?: { timeout?: number }): Promise<string>;
   innerText(options?: { timeout?: number }): Promise<string>;
   allTextContents(): Promise<string[]>;
@@ -45,6 +46,8 @@ export interface BrowserPage extends BrowserFrame {
   content(): Promise<string>;
   goto(url: string, options?: Record<string, unknown>): Promise<any>;
   url(): string;
+  /** Refreshes and returns the browser's current URL when the transport supports it. */
+  refreshCurrentUrl?(): Promise<string>;
   title(): Promise<string>;
   isClosed(): boolean;
   frames(): BrowserFrame[];
@@ -54,6 +57,14 @@ export interface BrowserPage extends BrowserFrame {
   waitForTimeout(ms: number): Promise<void>;
   waitForLoadState(state?: string, options?: { timeout?: number }): Promise<void>;
   bringToFront(): Promise<void>;
+  /** Dismisses a consent/cookie banner through the shared popup handler. */
+  dismissConsentPopups?(force?: boolean): Promise<boolean>;
+  /** Opt-in per-task scroll tuning; undefined keeps the default motion. */
+  setScrollProfile?(profile?: Record<string, number>): Promise<void>;
+  /** Native viewport size (no JavaScript). */
+  viewportSize?(): Promise<{ width: number; height: number }>;
+  /** Native cookie read (no page JavaScript); used to detect stored consent. */
+  cookies?(): Promise<Array<Record<string, unknown>>>;
   on(event: string, listener: (...args: any[]) => void): BrowserPage;
   off(event: string, listener: (...args: any[]) => void): BrowserPage;
   mouse: {
@@ -61,6 +72,7 @@ export interface BrowserPage extends BrowserFrame {
     click(x: number, y: number, options?: Record<string, unknown>): Promise<void>;
     down(options?: Record<string, unknown>): Promise<void>;
     up(options?: Record<string, unknown>): Promise<void>;
+    wheel(deltaX: number, deltaY: number): Promise<void>;
   };
 }
 

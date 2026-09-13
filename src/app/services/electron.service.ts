@@ -156,7 +156,7 @@ export class ElectronService {
       success: true,
       shops: this.previewShops,
       platforms: COMMERCE_PLATFORMS,
-      executorPlatforms: ["shopify"],
+      executorPlatforms: ["shopify", "mediamarkt"],
       monitorReady: true,
       earlyGateReady: true
     });
@@ -172,7 +172,7 @@ export class ElectronService {
     return Promise.resolve({
       success: true,
       shop: normalizedShop,
-      executorReady: normalizedShop.platform === "shopify",
+      executorReady: normalizedShop.platform === "shopify" || normalizedShop.platform === "mediamarkt",
       monitorReady: true,
       earlyGateReady: true
     });
@@ -344,7 +344,7 @@ export class ElectronService {
       profileCount: this.previewProfiles.length,
       proxyCount: this.previewProxies.length,
       commercePlatforms: COMMERCE_PLATFORMS,
-      commerceExecutorPlatforms: ["shopify"],
+      commerceExecutorPlatforms: ["shopify", "mediamarkt"],
       commerceMonitorReady: true,
       earlyGateReady: true,
       allowFinalPurchase: this.previewAllowFinalPurchase,

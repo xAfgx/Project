@@ -13,6 +13,7 @@ export const COMMERCE_PLATFORMS = [
   "commercetools",
   "salesforce-commerce-cloud",
   "pokemon-center",
+  "mediamarkt",
   "custom"
 ] as const;
 
@@ -110,6 +111,11 @@ export const COMMERCE_PLATFORM_CAPABILITIES: Record<CommercePlatform, CommercePl
     platform: "pokemon-center",
     productApi: "none",
     notes: "Pokémon Center is solved through the dedicated early-gate release journey (queue gate + guest checkout)."
+  },
+  mediamarkt: {
+    platform: "mediamarkt",
+    productApi: "none",
+    notes: "MediaMarkt is solved through the dedicated direct journey (search -> product -> cart -> guest checkout)."
   },
   custom: {
     platform: "custom",
