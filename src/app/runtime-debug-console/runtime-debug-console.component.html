@@ -1,0 +1,24 @@
+<button class="debug-toggle" type="button" (click)="toggle()">DEBUG</button>
+
+<section class="debug-console" *ngIf="open">
+  <header>
+    <strong>ARES Live Debug</strong>
+    <div class="actions">
+      <input [(ngModel)]="filter" placeholder="Filter" />
+      <button type="button" (click)="paused = !paused">{{ paused ? 'Resume' : 'Pause' }}</button>
+      <button type="button" (click)="clear()">Clear</button>
+      <button type="button" (click)="toggle()">Close</button>
+    </div>
+  </header>
+
+  <div class="stream">
+    <div class="row" *ngFor="let item of visibleEvents">
+      <span class="time">{{ item.at | date:'HH:mm:ss.SSS' }}</span>
+      <span class="level" [attr.data-level]="item.level">{{ item.level | uppercase }}</span>
+      <span class="source">{{ item.source }}</span>
+      <span class="event">{{ item.event }}</span>
+      <span class="task" *ngIf="item.taskId">{{ item.taskId }}</span>
+      <span class="message">{{ item.message }}</span>
+    </div>
+  </div>
+</section>
